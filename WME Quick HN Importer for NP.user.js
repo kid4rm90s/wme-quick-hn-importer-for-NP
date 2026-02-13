@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.3
+// @version      1.2.4
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,7 +29,7 @@
 // Original Author: Glodenox and JS55CT for WME GEOFILE script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Fixed :</strong><br> - Introduces support for Lalitpur Metric House data via geonep.com.np, integrated through a new persistent urlFeatures pipeline and an IndexedDB v3 upgrade with self-healing capabilities. This version also streamlines the house-numbering workflow, enhances UI feedback with a new parsing overlay and combined data counts, and improves overall system stability through better error handling and layer-refresh logic.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>Fixed :</strong><br> - Fixed critical bug where data loaded from IndexedDB would not display after page refresh. The Repository.clearAll() function was incorrectly clearing persistent data arrays during initialization, preventing restored features from appearing on the map. Data now properly persists across page reloads.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/wme-quick-hn-importer-for-NP/main/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -1433,11 +1433,10 @@ let Repository = function() {
       groups = [];
       directory.clear();
       
-      // Clear uploaded file features
-      uploadedFileFeatures = [];
-      
-      // Clear URL features
-      urlFeatures = [];
+      // NOTE: We do NOT clear uploadedFileFeatures or urlFeatures arrays here
+      // because they contain persistent data loaded from IndexedDB.
+      // Those arrays should only be cleared explicitly via their respective
+      // clear/delete functions (clearUploadedFeatures, clearURLFeatures)
     }
   };
 }();
@@ -2472,6 +2471,8 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.4 - 2024-06-12
+  - Fixed critical bug where data loaded from IndexedDB would not display after page refresh. The Repository.clearAll() function was incorrectly clearing persistent data arrays during initialization, preventing restored features from appearing on the map. Data now properly persists across page reloads.
   Version 1.2.3 - 2024-06-12
   - Bump version to 1.2.3 and add support for loading Metric House (Lalitpur) data from geonep.com.np. Introduces persistent URL-sourced features (urlFeatures) with a new IndexedDB object store (DB version -> 3), including load/store/clear routines, DB validation and automatic recreation on corruption. Adds fetchMetricHouseData to request and normalize ward data, a toggleParsingMessage overlay, and extensive logging. Integrates urlFeatures into the Repository/display pipeline and UI: checkbox to enable/disable loading, enhanced status messages, combined file+URL counts, and cleanup behavior. Improves restore notifications and timing, updates layer refreshing, and enhances house-number addition flow (segment selection, confirmations, and missing-street handling). Various error handling and UX tweaks throughout.
   */
