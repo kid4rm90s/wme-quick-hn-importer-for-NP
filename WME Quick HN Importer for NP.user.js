@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.1
+// @version      1.2.2
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,7 +29,7 @@
 // Original Author: Glodenox and JS55CT for WME GEOFILE script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Fixed :</strong><br> - added store/load of uploaded features to IndexedDB to persist across sessions<br> - improved bounding box check for uploaded features to fix missing points issue<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>Fixed :</strong><br> - Fixed file parser API usage for KML, KMZ, GPX, GML, WKT, and Shapefile formats<br> - Now correctly instantiates parser objects and calls read/toGeoJSON methods<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/wme-quick-hn-importer-for-NP/main/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -527,7 +527,9 @@ async function parseFileFormat(fileContent, fileext, filename) {
 
       case 'KML':
         if (typeof GeoKMLer !== 'undefined') {
-          geoJSON = GeoKMLer.parse(fileContent);
+          const geoKMLer = new GeoKMLer();
+          const kmlDoc = geoKMLer.read(fileContent);
+          geoJSON = geoKMLer.toGeoJSON(kmlDoc, true);
         } else {
           throw new Error('KML parser not available');
         }
@@ -535,7 +537,25 @@ async function parseFileFormat(fileContent, fileext, filename) {
 
       case 'KMZ':
         if (typeof GeoKMZer !== 'undefined') {
-          geoJSON = await GeoKMZer.parse(fileContent);
+          const geoKMZer = new GeoKMZer();
+          const kmlContentsArray = await geoKMZer.read(fileContent);
+          
+          // KMZ can contain multiple KML files, merge them into one FeatureCollection
+          const allFeatures = [];
+          for (const { content } of kmlContentsArray) {
+            const geoKMLer = new GeoKMLer();
+            const kmlDoc = geoKMLer.read(content);
+            const kmlGeoJSON = geoKMLer.toGeoJSON(kmlDoc, true);
+            if (kmlGeoJSON.type === 'FeatureCollection') {
+              allFeatures.push(...kmlGeoJSON.features);
+            } else if (kmlGeoJSON.type === 'Feature') {
+              allFeatures.push(kmlGeoJSON);
+            }
+          }
+          geoJSON = {
+            type: 'FeatureCollection',
+            features: allFeatures
+          };
         } else {
           throw new Error('KMZ parser not available');
         }
@@ -543,7 +563,9 @@ async function parseFileFormat(fileContent, fileext, filename) {
 
       case 'GPX':
         if (typeof GeoGPXer !== 'undefined') {
-          geoJSON = GeoGPXer.parse(fileContent);
+          const geoGPXer = new GeoGPXer();
+          const gpxDoc = geoGPXer.read(fileContent);
+          geoJSON = geoGPXer.toGeoJSON(gpxDoc);
         } else {
           throw new Error('GPX parser not available');
         }
@@ -551,7 +573,9 @@ async function parseFileFormat(fileContent, fileext, filename) {
 
       case 'GML':
         if (typeof GeoGMLer !== 'undefined') {
-          geoJSON = GeoGMLer.parse(fileContent);
+          const geoGMLer = new GeoGMLer();
+          const gmlDoc = geoGMLer.read(fileContent);
+          geoJSON = geoGMLer.toGeoJSON(gmlDoc);
         } else {
           throw new Error('GML parser not available');
         }
@@ -559,7 +583,9 @@ async function parseFileFormat(fileContent, fileext, filename) {
 
       case 'WKT':
         if (typeof GeoWKTer !== 'undefined') {
-          geoJSON = GeoWKTer.parse(fileContent);
+          const geoWKTer = new GeoWKTer();
+          const wktDoc = geoWKTer.read(fileContent, filename);
+          geoJSON = geoWKTer.toGeoJSON(wktDoc);
         } else {
           throw new Error('WKT parser not available');
         }
@@ -567,7 +593,9 @@ async function parseFileFormat(fileContent, fileext, filename) {
 
       case 'ZIP':
         if (typeof GeoSHPer !== 'undefined') {
-          geoJSON = await GeoSHPer.parse(fileContent);
+          const geoSHPer = new GeoSHPer();
+          await geoSHPer.read(fileContent);
+          geoJSON = geoSHPer.toGeoJSON();
         } else {
           throw new Error('Shapefile parser not available');
         }
