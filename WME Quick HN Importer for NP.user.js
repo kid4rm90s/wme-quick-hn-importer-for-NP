@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.2
+// @version      1.2.3
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,7 +29,7 @@
 // Original Author: Glodenox and JS55CT for WME GEOFILE script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Fixed :</strong><br> - Fixed file parser API usage for KML, KMZ, GPX, GML, WKT, and Shapefile formats<br> - Now correctly instantiates parser objects and calls read/toGeoJSON methods<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>Fixed :</strong><br> - Introduces support for Lalitpur Metric House data via geonep.com.np, integrated through a new persistent urlFeatures pipeline and an IndexedDB v3 upgrade with self-healing capabilities. This version also streamlines the house-numbering workflow, enhances UI feedback with a new parsing overlay and combined data counts, and improves overall system stability through better error handling and layer-refresh logic.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/wme-quick-hn-importer-for-NP/main/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -108,30 +108,53 @@ let cleanup = {
 (unsafeWindow || window).SDK_INITIALIZED.then(async () => {
   wmeSDK = getWmeSdk({ scriptId: "quick-hn-importer-for-np", scriptName: "Quick HN Importer for NP"});
   let loadResult = { loaded: false, count: 0 };
+  let urlLoadResult = { loaded: false, count: 0 };
+  
   try {
     await initDatabase();
     loadResult = await loadUploadedFeatures();
+    
+    // Check if URL source was previously enabled
+    const urlSourceEnabled = localStorage.getItem('qhni-enable-url-source') === 'true';
+    if (urlSourceEnabled) {
+      urlLoadResult = await loadURLFeatures();
+    }
   } catch (error) {
     log('Error initializing database: ' + error);
   }
+  
   wmeSDK.Events.once({ eventName: "wme-ready" }).then(() => {
     init();
     // If features were loaded, trigger layer update after init completes
-    if (loadResult.loaded && loadResult.count > 0) {
-      log(`Triggering layer update for ${loadResult.count} restored features`);
+    const totalCount = loadResult.count + urlLoadResult.count;
+    if (totalCount > 0) {
+      log(`Triggering layer update for ${totalCount} restored features (file: ${loadResult.count}, url: ${urlLoadResult.count})`);
       setTimeout(() => {
         const zoomLevel = wmeSDK.Map.getZoomLevel();
         const houseNumbersVisible = wmeSDK.Map.isLayerVisible({ layerName: "house_numbers"});
         
-        if (zoomLevel < 19 || !houseNumbersVisible) {
-          WazeToastr.Alerts.warning('Data Restored', 
-            `Loaded ${loadResult.count} features from ${loadResult.filename}. ` +
-            `Zoom to level 19+ and enable House Numbers layer to view.`);
+        let message = '';
+        if (loadResult.count > 0 && urlLoadResult.count > 0) {
+          message = `Loaded ${loadResult.count} features from ${loadResult.filename} and ${urlLoadResult.count} Metric House features`;
+        } else if (loadResult.count > 0) {
+          message = `Loaded ${loadResult.count} features from ${loadResult.filename}`;
+        } else if (urlLoadResult.count > 0) {
+          message = `Loaded ${urlLoadResult.count} Metric House features`;
+        }
+        
+        // Check if WazeToastr is available
+        if (typeof WazeToastr !== 'undefined' && WazeToastr.Alerts) {
+          if (zoomLevel < 19 || !houseNumbersVisible) {
+            WazeToastr.Alerts.warning('Data Restored', 
+              `${message}. Zoom to level 19+ and enable House Numbers layer to view.`);
+          } else {
+            WazeToastr.Alerts.success('Data Restored', message);
+          }
         } else {
-          WazeToastr.Alerts.success('Data Restored', `Loaded ${loadResult.count} features from ${loadResult.filename}`);
+          log(`Data Restored: ${message}`);
         }
         updateLayer();
-      }, 500);
+      }, 1500);
     }
   });
 });
@@ -152,25 +175,59 @@ let streetNames = new Set();
  *************************************************************************/
 function initDatabase() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('QHNI_Database', 1);
+    log('[DB] Attempting to open QHNI_Database version 3');
+    const request = indexedDB.open('QHNI_Database', 3);
     
     request.onerror = () => {
-      log('Failed to open IndexedDB database');
+      log('[DB] ERROR: Failed to open IndexedDB database: ' + request.error);
       reject(request.error);
     };
     
     request.onsuccess = () => {
       db = request.result;
-      log('IndexedDB database initialized successfully');
-      resolve();
+      
+      // Validate that required object stores exist
+      const hasUploadedFeatures = db.objectStoreNames.contains('uploadedFeatures');
+      const hasUrlFeatures = db.objectStoreNames.contains('urlFeatures');
+      
+      log(`[DB] Database opened successfully (version ${db.version})`);
+      log(`[DB] Object stores - uploadedFeatures: ${hasUploadedFeatures}, urlFeatures: ${hasUrlFeatures}`);
+      
+      if (!hasUploadedFeatures || !hasUrlFeatures) {
+        log('[DB] ERROR: Required object stores missing! Attempting to recreate database...');
+        db.close();
+        
+        // Delete and recreate the database
+        const deleteRequest = indexedDB.deleteDatabase('QHNI_Database');
+        deleteRequest.onsuccess = () => {
+          log('[DB] Old database deleted, reinitializing...');
+          // Retry initialization
+          initDatabase().then(resolve).catch(reject);
+        };
+        deleteRequest.onerror = () => {
+          log('[DB] ERROR: Failed to delete corrupted database');
+          reject(new Error('Database validation failed and could not be recreated'));
+        };
+      } else {
+        log('[DB] Database validation successful');
+        resolve();
+      }
     };
     
     request.onupgradeneeded = (event) => {
       db = event.target.result;
+      log(`[DB] Database upgrade needed (old version: ${event.oldVersion}, new version: ${event.newVersion})`);
+      
       if (!db.objectStoreNames.contains('uploadedFeatures')) {
         db.createObjectStore('uploadedFeatures', { keyPath: 'id' });
-        log('Created uploadedFeatures object store');
+        log('[DB] Created uploadedFeatures object store');
       }
+      if (!db.objectStoreNames.contains('urlFeatures')) {
+        db.createObjectStore('urlFeatures', { keyPath: 'id' });
+        log('[DB] Created urlFeatures object store');
+      }
+      
+      log('[DB] Database upgrade complete');
     };
   });
 }
@@ -186,6 +243,12 @@ function initDatabase() {
 async function loadUploadedFeatures() {
   if (!db) {
     log('Database not initialized, skipping feature loading');
+    return { loaded: false, count: 0 };
+  }
+  
+  // Validate object store exists
+  if (!db.objectStoreNames.contains('uploadedFeatures')) {
+    log('[DB] ERROR: uploadedFeatures object store does not exist');
     return { loaded: false, count: 0 };
   }
   
@@ -232,6 +295,12 @@ async function storeUploadedFeatures(filename) {
     return;
   }
   
+  // Validate object store exists
+  if (!db.objectStoreNames.contains('uploadedFeatures')) {
+    log('[DB] ERROR: uploadedFeatures object store does not exist');
+    throw new Error('uploadedFeatures object store not found');
+  }
+  
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(['uploadedFeatures'], 'readwrite');
     const store = transaction.objectStore('uploadedFeatures');
@@ -275,6 +344,12 @@ async function clearUploadedFeatures() {
     return;
   }
   
+  // Validate object store exists
+  if (!db.objectStoreNames.contains('uploadedFeatures')) {
+    log('[DB] WARNING: uploadedFeatures object store does not exist, skipping DB clear');
+    return;
+  }
+  
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(['uploadedFeatures'], 'readwrite');
     const store = transaction.objectStore('uploadedFeatures');
@@ -292,11 +367,331 @@ async function clearUploadedFeatures() {
   });
 }
 
+/*********************************************************************
+ * loadURLFeatures
+ * 
+ * Loads URL-sourced features from IndexedDB.
+ * Restores the urlFeatures array from stored data.
+ * 
+ * @returns {Promise} Resolves with loaded features info
+ *************************************************************************/
+async function loadURLFeatures() {
+  log('[URL] loadURLFeatures() - Starting to load URL features from IndexedDB');
+  if (!db) {
+    log('[URL] Database not initialized, skipping URL feature loading');
+    return { loaded: false, count: 0 };
+  }
+  
+  // Validate object store exists
+  if (!db.objectStoreNames.contains('urlFeatures')) {
+    log('[URL] ERROR: urlFeatures object store does not exist in database');
+    log('[URL] Available stores: ' + Array.from(db.objectStoreNames).join(', '));
+    return { loaded: false, count: 0 };
+  }
+  
+  return new Promise((resolve, reject) => {
+    log('[URL] Creating IndexedDB transaction for urlFeatures store');
+    const transaction = db.transaction(['urlFeatures'], 'readonly');
+    const store = transaction.objectStore('urlFeatures');
+    const request = store.get('current');
+    
+    request.onerror = () => {
+      log('[URL] ERROR: Failed to load URL features from IndexedDB: ' + request.error);
+      resolve({ loaded: false, count: 0 });
+    };
+    
+    request.onsuccess = () => {
+      if (request.result && request.result.features) {
+        urlFeatures = request.result.features;
+        log(`[URL] SUCCESS: Restored ${urlFeatures.length} URL features from IndexedDB`);
+        log(`[URL] Timestamp: ${request.result.timestamp || 'N/A'}`);
+        resolve({ 
+          loaded: true, 
+          count: urlFeatures.length
+        });
+      } else {
+        log('[URL] No URL features found in IndexedDB (empty or no data)');
+        resolve({ loaded: false, count: 0 });
+      }
+    };
+  });
+}
+
+/*********************************************************************
+ * storeURLFeatures
+ * 
+ * Stores URL-sourced features to IndexedDB.
+ * Saves the urlFeatures array with metadata.
+ * 
+ * @returns {Promise} Resolves when features are stored successfully
+ *************************************************************************/
+async function storeURLFeatures() {
+  log('[URL] storeURLFeatures() - Starting to store URL features to IndexedDB');
+  if (!db) {
+    log('[URL] ERROR: Database not initialized, skipping URL feature storage');
+    return;
+  }
+  
+  // Validate object store exists
+  if (!db.objectStoreNames.contains('urlFeatures')) {
+    log('[URL] ERROR: urlFeatures object store does not exist in database');
+    log('[URL] Available stores: ' + Array.from(db.objectStoreNames).join(', '));
+    throw new Error('urlFeatures object store not found - database may need reinitialization');
+  }
+  
+  return new Promise((resolve, reject) => {
+    log(`[URL] Creating write transaction for ${urlFeatures.length} features`);
+    const transaction = db.transaction(['urlFeatures'], 'readwrite');
+    const store = transaction.objectStore('urlFeatures');
+    
+    const data = {
+      id: 'current',
+      features: urlFeatures,
+      timestamp: new Date().toISOString(),
+      count: urlFeatures.length
+    };
+    
+    log(`[URL] Preparing to store ${data.count} URL features with timestamp ${data.timestamp}`);
+    
+    const request = store.put(data);
+    
+    request.onerror = () => {
+      log('[URL] ERROR: Failed to store URL features to IndexedDB: ' + request.error);
+      reject(request.error);
+    };
+    
+    request.onsuccess = () => {
+      log(`[URL] SUCCESS: Stored ${urlFeatures.length} URL features to IndexedDB`);
+      resolve();
+    };
+  });
+}
+
+/*********************************************************************
+ * clearURLFeatures
+ * 
+ * Removes URL features from IndexedDB and memory.
+ * 
+ * @returns {Promise} Resolves when features are cleared successfully
+ *************************************************************************/
+async function clearURLFeatures() {
+  log('[URL] clearURLFeatures() - Starting to clear URL features');
+  log(`[URL] Current URL features count in memory: ${urlFeatures.length}`);
+  
+  if (!db) {
+    log('[URL] ERROR: Database not initialized, skipping URL feature clearing');
+    return;
+  }
+  
+  // Validate object store exists
+  if (!db.objectStoreNames.contains('urlFeatures')) {
+    log('[URL] WARNING: urlFeatures object store does not exist, clearing memory only');
+    log('[URL] Available stores: ' + Array.from(db.objectStoreNames).join(', '));
+    
+    // Still clear memory and Repository even if DB store doesn't exist
+    const directory = Repository.getDirectory?.();
+    if (directory) {
+      const urlFeatureIds = Array.from(directory.keys()).filter(id => 
+        id.startsWith('url-') || id.startsWith('np-')
+      );
+      urlFeatureIds.forEach(id => directory.delete(id));
+      log(`[URL] Removed ${urlFeatureIds.length} URL features from Repository directory`);
+    }
+    
+    const previousCount = urlFeatures.length;
+    urlFeatures = [];
+    log(`[URL] Cleared ${previousCount} URL features from memory array`);
+    return;
+  }
+  
+  return new Promise((resolve, reject) => {
+    log('[URL] Creating delete transaction for urlFeatures store');
+    const transaction = db.transaction(['urlFeatures'], 'readwrite');
+    const store = transaction.objectStore('urlFeatures');
+    const request = store.delete('current');
+    
+    request.onerror = () => {
+      log('[URL] ERROR: Failed to clear URL features from IndexedDB: ' + request.error);
+      reject(request.error);
+    };
+    
+    request.onsuccess = () => {
+      log('[URL] SUCCESS: Cleared URL features from IndexedDB');
+      
+      // Remove URL features from Repository directory
+      // URL features have IDs that start with 'url-' or 'np-'
+      const directory = Repository.getDirectory?.();
+      if (directory) {
+        log(`[URL] Checking Repository directory for URL features (total items: ${directory.size})`);
+        const urlFeatureIds = Array.from(directory.keys()).filter(id => 
+          id.startsWith('url-') || id.startsWith('np-')
+        );
+        log(`[URL] Found ${urlFeatureIds.length} URL features in Repository directory to remove`);
+        urlFeatureIds.forEach(id => directory.delete(id));
+        log(`[URL] SUCCESS: Removed ${urlFeatureIds.length} URL features from Repository directory`);
+        log(`[URL] Repository directory size after cleanup: ${directory.size}`);
+      } else {
+        log('[URL] WARNING: Repository.getDirectory() not available');
+      }
+      
+      const previousCount = urlFeatures.length;
+      urlFeatures = [];
+      log(`[URL] Cleared ${previousCount} URL features from memory array`);
+      resolve();
+    };
+  });
+}
+
+/*********************************************************************
+ * fetchMetricHouseData
+ * 
+ * Fetches house number data from the Metric House LMC API.
+ * Loads data for all 29 wards and processes the features.
+ * First checks if the current map view is within Lalitpur Municipality boundary.
+ * 
+ * @returns {Promise} Resolves with the loaded features
+ *************************************************************************/
+async function fetchMetricHouseData() {
+  log('[URL] fetchMetricHouseData() - Starting to fetch Metric House data from LMC API');
+  
+  // Lalitpur Municipality boundary polygon
+  let laliturBoundary = turf.polygon([[
+    [85.29377337876386, 27.603309874523035],
+    [85.28907174008309, 27.610757759711703],
+    [85.28112722544194, 27.644637619503936],
+    [85.2911097667452, 27.673688570775262],
+    [85.301321831427, 27.692360556657775],
+    [85.30740589291473, 27.694362605619077],
+    [85.32757155676471, 27.68690327105091],
+    [85.34449915180973, 27.672768378131995],
+    [85.35597653295329, 27.63372772622652],
+    [85.33227244070862, 27.616131609219202],
+    [85.29377337876386, 27.603309874523035]
+  ]]);
+  
+  // Get current map center and check if it's within Lalitpur boundary
+  const mapCenter = wmeSDK.Map.getMapCenter();
+  log(`[URL] Current map center: lon=${mapCenter.lon}, lat=${mapCenter.lat}`);
+  
+  // Create a point from the current map center
+  const centerPoint = turf.point([mapCenter.lon, mapCenter.lat]);
+  
+  // Check if current map center is outside Lalitpur boundary
+  if (!turf.booleanPointInPolygon(centerPoint, laliturBoundary)) {
+    log('[URL] Current map center is outside Lalitpur Municipality boundary, skipping data fetch');
+    WazeToastr.Alerts.info('Location Notice', 'Metric House data is only available within Lalitpur Municipality. Please navigate to Lalitpur to load data.');
+    return [];
+  }
+  
+  log('[URL] Map view intersects with Lalitpur boundary, proceeding with data fetch');
+  toggleParsingMessage(true);
+  
+  let wardNumbers = Array.from({ length: 29 }, (_, index) => index + 1);
+  log(`[URL] Preparing to fetch data for ${wardNumbers.length} wards`);
+  let allFeatures = [];
+  
+  try {
+    const startTime = Date.now();
+    const results = await Promise.allSettled(wardNumbers.map((wardNo) => {
+      log(`[URL] Fetching data for Ward ${wardNo}`);
+      return httpRequest({
+        url: `https://geonep.com.np/LMC/ajax/x_building.php?ward_no=${wardNo}`
+      }, (response) => {
+        let features = [];
+        const totalFeatures = response.response.features?.length || 0;
+        log(`[URL] Ward ${wardNo}: Received ${totalFeatures} raw features from API`);
+        
+        response.response.features?.forEach((feature) => {
+          let props = feature.properties || {};
+          let number = props.metric_num;
+          let street = props.rd_naeng;
+          if (!number || !street) {
+            return;
+          }
+          
+          let center = turf.center(feature);
+          // Nepal road name mapping: Marg -> Marga, Street -> St, normalize whitespace
+          let normalizedStreet = cleanupName(street)
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\bMarg\b/g, 'Marga')
+            .replace(/\bStreet$/i, 'St');
+          features.push({
+            type: "Feature",
+            id: `url-np-${props.gid}`,
+            geometry: center.geometry,
+            properties: {
+              street: normalizedStreet,
+              number: number,
+              municipality: props.tole_ne_en || `Ward ${wardNo}`,
+              type: 'active'
+            }
+          });
+        });
+        log(`[URL] Ward ${wardNo}: Processed ${features.length} valid features`);
+        return features;
+      });
+    }));
+    
+    // Filter successful requests and collect features
+    let successCount = 0;
+    let failureCount = 0;
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled' && result.value) {
+        successCount++;
+        allFeatures = allFeatures.concat(result.value);
+        log(`[URL] Ward ${index + 1}: SUCCESS - Added ${result.value.length} features`);
+      } else if (result.status === 'rejected') {
+        failureCount++;
+        log(`[URL] Ward ${index + 1}: FAILED - ${result.reason}`);
+      }
+    });
+    
+    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    log(`[URL] Fetch complete: ${successCount} wards succeeded, ${failureCount} wards failed`);
+    log(`[URL] Total features collected: ${allFeatures.length} in ${elapsedTime}s`);
+    
+    toggleParsingMessage(false);
+    return allFeatures;
+  } catch (error) {
+    log(`[URL] ERROR: Exception in fetchMetricHouseData: ${error}`);
+    toggleParsingMessage(false);
+    throw error;
+  }
+}
+
+/*********************************************************************
+ * toggleParsingMessage
+ * 
+ * Shows or hides a parsing/loading message overlay.
+ * Similar to WME GeoFile implementation.
+ * 
+ * @param {boolean} show - Whether to show or hide the message
+ *************************************************************************/
+function toggleParsingMessage(show) {
+  const existingMessage = document.getElementById('QHNIParsingMessage');
+  
+  if (show) {
+    if (!existingMessage) {
+      const parsingMessage = document.createElement('div');
+      parsingMessage.id = 'QHNIParsingMessage';
+      parsingMessage.style = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 16px 32px; background: rgba(0, 0, 0, 0.7); border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2); font-family: 'Arial', sans-serif; font-size: 1.1rem; text-align: center; z-index: 2000; color: #ffffff; border: 2px solid #33ff57;`;
+      parsingMessage.innerHTML = '<i class="fa fa-pulse fa-spinner"></i> Loading Metric House data from LMC, please wait...';
+      document.body.appendChild(parsingMessage);
+    }
+  } else {
+    if (existingMessage) {
+      existingMessage.remove();
+    }
+  }
+}
+
 proj4.defs("EPSG:3794","+proj=tmerc +lat_0=0 +lon_0=15 +k=0.9999 +x_0=500000 +y_0=-5000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs +type=crs");
 
 // File format support variables
 let projectionMap = {};
 let uploadedFileFeatures = [];
+let urlFeatures = [];
 
 // Setup coordinate reference systems and projections
 function setupProjectionsAndTransforms() {
@@ -953,6 +1348,34 @@ let Repository = function() {
         features = features.concat(fileFeatures);
       }
       
+      // Add URL features that are within extent
+      if (urlFeatures && urlFeatures.length > 0) {
+        if (debug) {
+          log(`Processing ${urlFeatures.length} URL features for extent`);
+        }
+        const [extLeft, extBottom, extRight, extTop] = extent;
+        
+        const urlFeaturesInExtent = urlFeatures.filter((feature) => {
+          try {
+            const [lon, lat] = feature.geometry.coordinates;
+            const inBounds = lon >= extLeft && lon <= extRight && lat >= extBottom && lat <= extTop;
+            
+            if (inBounds) {
+              directory.set(feature.id, feature);
+            }
+            return inBounds;
+          } catch (e) {
+            return false;
+          }
+        });
+        
+        if (debug) {
+          log(`Found ${urlFeaturesInExtent.length} URL features within current extent`);
+        }
+        
+        features = features.concat(urlFeaturesInExtent);
+      }
+      
       // Remove duplicate municipality+street+number combinations (mostly boxes at the same location)
       let processedHouseNumbers = new Set();
       let dedupedFeatures = features.filter((feature) => {
@@ -985,6 +1408,7 @@ let Repository = function() {
       });
     },
     getFeatureById: (featureId) => directory.get(featureId),
+    getDirectory: () => directory,
     getFeatures: (filterFunction) => {
       groups.forEach((col, xIndex) => {
         col.forEach((row, yIndex) => {
@@ -1011,6 +1435,9 @@ let Repository = function() {
       
       // Clear uploaded file features
       uploadedFileFeatures = [];
+      
+      // Clear URL features
+      urlFeatures = [];
     }
   };
 }();
@@ -1173,13 +1600,17 @@ Repository.addSource((left, bottom, right, top) => {
 }); 
 *********************************/
 
-
+/*
 
 // Nepal (Lalitpur Metropolitan City):
 Repository.addSource((left, bottom, right, top) => {
   // Check if URL source is enabled
   const urlSourceEnabled = localStorage.getItem('qhni-enable-url-source') === 'true';
+  log(`[URL-Repository] addSource called for extent [${left}, ${bottom}, ${right}, ${top}]`);
+  log(`[URL-Repository] URL source enabled: ${urlSourceEnabled}`);
+  
   if (!urlSourceEnabled) {
+    log('[URL-Repository] URL source disabled, returning empty array');
     return new Promise((resolve) => resolve([]));
   }
   
@@ -1197,17 +1628,26 @@ Repository.addSource((left, bottom, right, top) => {
   [85.35597653295329, 27.63372772622652],
   [85.33227244070862, 27.616131609219202],
   [85.29377337876386, 27.603309874523035]
-]]);
-  if (turf.booleanDisjoint(regionPoly, requestedPoly)) {
+  ]]);
+  
+  const isDisjoint = turf.booleanDisjoint(regionPoly, requestedPoly);
+  log(`[URL-Repository] Region intersection check: ${isDisjoint ? 'DISJOINT (outside LMC)' : 'INTERSECTS (inside LMC)'}`);
+  
+  if (isDisjoint) {
+    log('[URL-Repository] Requested extent outside Lalitpur region, returning empty array');
     return Promise.resolve([]);
   }
 
   let wardNumbers = Array.from({ length: 29 }, (_, index) => index + 1);
+  log(`[URL-Repository] Fetching data for ${wardNumbers.length} wards within extent`);
+  
   return Promise.allSettled(wardNumbers.map((wardNo) => {
     return httpRequest({
       url: `https://geonep.com.np/LMC/ajax/x_building.php?ward_no=${wardNo}`
     }, (response) => {
       let features = [];
+      const totalRawFeatures = response.response.features?.length || 0;
+      
       response.response.features?.forEach((feature) => {
         let props = feature.properties || {};
         let number = props.metric_num;
@@ -1237,24 +1677,35 @@ Repository.addSource((left, bottom, right, top) => {
           }
         });
       });
+      
+      log(`[URL-Repository] Ward ${wardNo}: ${features.length}/${totalRawFeatures} features in extent`);
       return features;
     });
   })).then((results) => {
     // Filter successful requests and log failures
+    let successCount = 0;
+    let failureCount = 0;
+    
     const featureGroups = results
-      .filter(result => {
+      .filter((result, index) => {
         if (result.status === 'rejected') {
-          log(`Ward request failed: ${result.reason}`);
+          failureCount++;
+          log(`[URL-Repository] Ward ${index + 1} request FAILED: ${result.reason}`);
           return false;
         }
+        successCount++;
         return true;
       })
       .map(result => result.value);
     
+    const totalFeatures = featureGroups.reduce((sum, group) => sum + group.length, 0);
+    log(`[URL-Repository] Completed: ${successCount} wards succeeded, ${failureCount} failed, ${totalFeatures} total features`);
+    
     return [].concat(...featureGroups);
   });
 });
-
+*/
+  
 // Create file upload UI in sidebar
 function createFileUploadUI() {
   wmeSDK.Sidebar.registerScriptTab().then(({ tabLabel, tabPane }) => {
@@ -1306,7 +1757,16 @@ function createFileUploadUI() {
     clearBtn.style.cssText = 'width: 100%; padding: 10px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; margin-bottom: 15px;';
     clearBtn.onmouseover = () => clearBtn.style.background = '#da190b';
     clearBtn.onmouseout = () => clearBtn.style.background = '#f44336';
-    clearBtn.onclick = clearUploadedData;
+    clearBtn.onclick = async () => {
+      await clearUploadedData();
+      // Update the button's display based on remaining data
+      const status = document.getElementById('qhni-upload-status');
+      if (status && urlFeatures.length > 0) {
+        status.textContent = `✅ Restored ${urlFeatures.length} Metric House features`;
+        status.style.color = '#4CAF50';
+        status.style.borderLeftColor = '#4CAF50';
+      }
+    };
     container.appendChild(clearBtn);
 
     // Separator
@@ -1334,7 +1794,7 @@ function createFileUploadUI() {
 
     const checkboxLabel = document.createElement('label');
     checkboxLabel.htmlFor = 'qhni-url-source-checkbox';
-    checkboxLabel.textContent = 'Enable loading from geonep.com.np LMC';
+    checkboxLabel.textContent = 'Load Metric House for LMC';
     checkboxLabel.style.cssText = 'font-size: 11px; cursor: pointer; user-select: none;';
     checkboxContainer.appendChild(checkboxLabel);
 
@@ -1344,10 +1804,118 @@ function createFileUploadUI() {
     urlInfo.style.cssText = 'font-size: 10px; color: inherit; padding: 5px; background: inherit; border-radius: 4px;';
     container.appendChild(urlInfo);
 
-    // Save checkbox state
-    urlCheckbox.addEventListener('change', () => {
-      localStorage.setItem('qhni-enable-url-source', urlCheckbox.checked);
-      WazeToastr.Alerts.info('Setting Updated', 'URL data source ' + (urlCheckbox.checked ? 'enabled' : 'disabled'));
+    // Handle checkbox state change - load or unload URL data
+    urlCheckbox.addEventListener('change', async () => {
+      const isChecked = urlCheckbox.checked;
+      log(`[URL-Checkbox] State changed: ${isChecked ? 'CHECKED (enabling)' : 'UNCHECKED (disabling)'}`);
+      localStorage.setItem('qhni-enable-url-source', isChecked);
+      log(`[URL-Checkbox] Saved state to localStorage: ${isChecked}`);
+      
+      if (isChecked) {
+        // Load URL data
+        log('[URL-Checkbox] Starting URL data load process');
+        try {
+          status.textContent = '⏳ Loading Metric House data...';
+          status.style.color = '#ff9800';
+          status.style.borderLeftColor = '#ff9800';
+          
+          log('[URL-Checkbox] Calling fetchMetricHouseData()');
+          const features = await fetchMetricHouseData();
+          urlFeatures = features;
+          log(`[URL-Checkbox] Fetch completed: ${features.length} features received`);
+          
+          // Only proceed with storage and success messages if features were actually loaded
+          if (features.length > 0) {
+            // Store to IndexedDB
+            log('[URL-Checkbox] Storing features to IndexedDB');
+            await storeURLFeatures();
+            log('[URL-Checkbox] Storage completed');
+            
+            WazeToastr.Alerts.success('Data Loaded', `Loaded ${features.length} Metric House features from LMC`);
+            
+            if (uploadedFileFeatures.length > 0) {
+              status.textContent = `✅ File: ${uploadedFileFeatures.length} features | URL: ${urlFeatures.length} features`;
+              log(`[URL-Checkbox] Status: Combined ${uploadedFileFeatures.length} file + ${urlFeatures.length} URL features`);
+            } else {
+              status.textContent = `✅ Loaded ${urlFeatures.length} Metric House features`;
+              log(`[URL-Checkbox] Status: ${urlFeatures.length} URL features only`);
+            }
+            status.style.color = '#4CAF50';
+            status.style.borderLeftColor = '#4CAF50';
+            
+            // Update layer to show new data
+            log('[URL-Checkbox] Calling updateLayer() to display features');
+            updateLayer();
+            log('[URL-Checkbox] URL data load process completed successfully');
+          } else {
+            // No features loaded (likely outside boundary) - revert checkbox
+            log('[URL-Checkbox] No features loaded, reverting checkbox state');
+            urlCheckbox.checked = false;
+            localStorage.setItem('qhni-enable-url-source', 'false');
+            
+            if (uploadedFileFeatures.length > 0) {
+              status.textContent = `✅ Restored ${uploadedFileFeatures.length} features from file`;
+            } else {
+              status.textContent = 'No file loaded';
+              status.style.color = '#666';
+              status.style.borderLeftColor = '#ddd';
+            }
+            log('[URL-Checkbox] No features loaded, checkbox disabled');
+          }
+        } catch (error) {
+          log('[URL-Checkbox] ERROR during load: ' + error);
+          log('[URL-Checkbox] Stack trace: ' + (error.stack || 'No stack trace'));
+          WazeToastr.Alerts.error('Load Failed', 'Failed to load Metric House data');
+          urlCheckbox.checked = false;
+          localStorage.setItem('qhni-enable-url-source', 'false');
+          log('[URL-Checkbox] Reverted checkbox state due to error');
+          
+          if (uploadedFileFeatures.length > 0) {
+            status.textContent = `✅ Restored ${uploadedFileFeatures.length} features from file`;
+          } else {
+            status.textContent = 'No file loaded';
+          }
+          status.style.color = '#4CAF50';
+          status.style.borderLeftColor = '#4CAF50';
+        }
+      } else {
+        // Unload URL data
+        log('[URL-Checkbox] Starting URL data unload process');
+        try {
+          log(`[URL-Checkbox] Current URL features in memory: ${urlFeatures.length}`);
+          
+          // Clear all features from the layer first
+          log('[URL-Checkbox] Clearing all features from layer');
+          wmeSDK.Map.removeAllFeaturesFromLayer({
+            layerName: LAYER_NAME
+          });
+          log('[URL-Checkbox] Layer cleared');
+          
+          log('[URL-Checkbox] Calling clearURLFeatures()');
+          await clearURLFeatures();
+          log('[URL-Checkbox] URL features cleared successfully');
+          
+          WazeToastr.Alerts.info('Data Removed', 'Metric House data removed from display');
+          
+          if (uploadedFileFeatures.length > 0) {
+            status.textContent = `✅ Restored ${uploadedFileFeatures.length} features from file`;
+            log(`[URL-Checkbox] Status: ${uploadedFileFeatures.length} file features remaining`);
+          } else {
+            status.textContent = 'No file loaded';
+            log('[URL-Checkbox] Status: No features remaining');
+          }
+          status.style.color = '#4CAF50';
+          status.style.borderLeftColor = '#4CAF50';
+          
+          // Update layer to show only remaining data (uploaded files)
+          log('[URL-Checkbox] Calling updateLayer() to refresh display');
+          updateLayer();
+          log('[URL-Checkbox] URL data unload process completed successfully');
+        } catch (error) {
+          log('[URL-Checkbox] ERROR during unload: ' + error);
+          log('[URL-Checkbox] Stack trace: ' + (error.stack || 'No stack trace'));
+        }
+      }
     });
 
     const status = document.createElement('div');
@@ -1355,8 +1923,16 @@ function createFileUploadUI() {
     status.style.cssText = 'font-size: 11px; padding: 10px; color: inherit; background: rgb(109, 109, 109); border-radius: 4px; min-height: 20px; border-left: 3px solid #ddd;';
     
     // Check if there are restored features from previous session
-    if (uploadedFileFeatures.length > 0) {
+    if (uploadedFileFeatures.length > 0 && urlFeatures.length > 0) {
+      status.textContent = `✅ File: ${uploadedFileFeatures.length} features | URL: ${urlFeatures.length} features`;
+      status.style.color = '#4CAF50';
+      status.style.borderLeftColor = '#4CAF50';
+    } else if (uploadedFileFeatures.length > 0) {
       status.textContent = `✅ Restored ${uploadedFileFeatures.length} features from previous session`;
+      status.style.color = '#4CAF50';
+      status.style.borderLeftColor = '#4CAF50';
+    } else if (urlFeatures.length > 0) {
+      status.textContent = `✅ Restored ${urlFeatures.length} Metric House features`;
       status.style.color = '#4CAF50';
       status.style.borderLeftColor = '#4CAF50';
     } else {
@@ -1375,7 +1951,12 @@ function createFileUploadUI() {
 
       try {
         const features = await handleFileImport(file);
-        status.textContent = `✅ Loaded ${features.length} features from ${file.name}`;
+        
+        if (urlFeatures.length > 0) {
+          status.textContent = `✅ File: ${features.length} features | URL: ${urlFeatures.length} features`;
+        } else {
+          status.textContent = `✅ Loaded ${features.length} features from ${file.name}`;
+        }
         status.style.color = '#4CAF50';
         status.style.borderLeftColor = '#4CAF50';
         
@@ -1412,9 +1993,16 @@ async function clearUploadedData() {
   
   const status = document.getElementById('qhni-upload-status');
   if (status) {
-    status.textContent = 'No file loaded';
-    status.style.color = 'inherit';
-    status.style.borderLeftColor = '#ddd';
+    if (urlFeatures.length > 0) {
+      // URL data still present, update status to reflect that
+      status.textContent = `✅ Restored ${urlFeatures.length} Metric House features`;
+      status.style.color = '#4CAF50';
+      status.style.borderLeftColor = '#4CAF50';
+    } else {
+      status.textContent = 'No file loaded';
+      status.style.color = 'inherit';
+      status.style.borderLeftColor = '#ddd';
+    }
   }
   updateLayer();
   WazeToastr.Alerts.info('Cleared', 'Uploaded file data cleared');
@@ -1519,36 +2107,82 @@ function init() {
     if (streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number))) {
       return;
     }
+    
+    // Function to add house number to a segment
+    const addHouseNumber = (segment, feature) => {
+      wmeSDK.Editing.setSelection({
+        selection: {
+          ids: [ segment.id ],
+          objectType: "segment"
+        }
+      });
+      // Store house number
+      wmeSDK.DataModel.HouseNumbers.addHouseNumber({
+        number: feature.properties.number,
+        point: feature.geometry,
+        segmentId: segment.id
+      });
+      // Add to streetNumbers
+      let nameMatches = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0;
+      if (nameMatches) {
+        if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
+          streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
+        }
+        streetNumbers.get(feature.properties.street.toLowerCase()).add(simplifyNumber(feature.properties.number));
+      }
+      wmeSDK.Map.redrawLayer({ layerName: LAYER_NAME });
+    };
+    
     // Try to find nearest segment with name match to latch to
     let nearestSegment = findNearestSegment(feature, true);
     if (!nearestSegment) {
       nearestSegment = findNearestSegment(feature, false);
-      let nearestStreetName = wmeSDK.DataModel.Streets.getById({ streetId: nearestSegment.primaryStreetId })?.name;
-      if (!confirm(`Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?`)) {
+      
+      // Check if we found any segment at all
+      if (!nearestSegment) {
+        WazeToastr.Alerts.error('No Segment Found', `Cannot add house number - no nearby segments found for "${feature.properties.street}"`);
         return;
       }
-    }
-    wmeSDK.Editing.setSelection({
-      selection: {
-        ids: [ nearestSegment.id ],
-        objectType: "segment"
+      
+      // Try to get the street name
+      let nearestStreetName = wmeSDK.DataModel.Streets.getById({ streetId: nearestSegment.primaryStreetId })?.name || null;
+      
+      // Check if the nearest segment has a street name assigned
+      if (!nearestStreetName || nearestStreetName.trim() === '') {
+        WazeToastr.Alerts.error(
+          'No Street Name', 
+          `Cannot add house number - the nearest segment has no street name assigned. Please add a street name to the segment first, then try again.`
+        );
+        // Select the segment so user can add a name to it
+        wmeSDK.Editing.setSelection({
+          selection: {
+            ids: [ nearestSegment.id ],
+            objectType: "segment"
+          }
+        });
+        return;
       }
-    });
-    // Store house number
-    wmeSDK.DataModel.HouseNumbers.addHouseNumber({
-      number: feature.properties.number,
-      point: feature.geometry,
-      segmentId: nearestSegment.id
-    });
-    // Add to streetNumbers
-    let nameMatches = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0;
-    if (nameMatches) {
-      if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
-        streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
-      }
-      streetNumbers.get(feature.properties.street.toLowerCase()).add(simplifyNumber(feature.properties.number));
+      
+      // Show confirmation dialog with callbacks
+      WazeToastr.Alerts.confirm(
+        scriptName,
+        `Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?`,
+        function() {
+          // OK callback - user confirmed
+          addHouseNumber(nearestSegment, feature);
+        },
+        function() {
+          // Cancel callback - user cancelled, do nothing
+          log('User cancelled house number addition');
+        },
+        "Add to Segment",
+        "Cancel"
+      );
+      return; // Exit early since we're handling async
     }
-    wmeSDK.Map.redrawLayer({ layerName: LAYER_NAME });
+    
+    // Direct match found, add immediately
+    addHouseNumber(nearestSegment, feature);
   };
   
   cleanup.addEvent(
@@ -1835,4 +2469,9 @@ scriptupdatemonitor();
 // Cleanup on page unload
   window.addEventListener('beforeunload', () => cleanup.all());
   
-  })();
+})();
+  
+  /* Changelog:
+  Version 1.2.3 - 2024-06-12
+  - Bump version to 1.2.3 and add support for loading Metric House (Lalitpur) data from geonep.com.np. Introduces persistent URL-sourced features (urlFeatures) with a new IndexedDB object store (DB version -> 3), including load/store/clear routines, DB validation and automatic recreation on corruption. Adds fetchMetricHouseData to request and normalize ward data, a toggleParsingMessage overlay, and extensive logging. Integrates urlFeatures into the Repository/display pipeline and UI: checkbox to enable/disable loading, enhanced status messages, combined file+URL counts, and cleanup behavior. Improves restore notifications and timing, updates layer refreshing, and enhances house-number addition flow (segment selection, confirmations, and missing-street handling). Various error handling and UX tweaks throughout.
+  */
