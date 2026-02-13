@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.4
+// @version      1.2.5
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -20,20 +20,20 @@
 // @require      https://update.greasyfork.org/scripts/526229/1537672/GeoGMLer.js
 // @require      https://update.greasyfork.org/scripts/526996/1537647/GeoSHPer.js
 // @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
-// @downloadURL  https://raw.githubusercontent.com/kid4rm90s/wme-quick-hn-importer-for-NP/main/WME%20Quick%20HN%20Importer%20for%20NP.user.js
-// @updateURL    https://raw.githubusercontent.com/kid4rm90s/wme-quick-hn-importer-for-NP/main/WME%20Quick%20HN%20Importer%20for%20NP.user.js
+// @downloadURL https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js
+// @updateURL https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.meta.js
 
 // ==/UserScript==
 
 /* global getWmeSdk, turf, proj4, WazeToastr */
-// Original Author: Glodenox and JS55CT for WME GEOFILE script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
+// Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
   const updateMessage = `<strong>Fixed :</strong><br> - Fixed critical bug where data loaded from IndexedDB would not display after page refresh. The Repository.clearAll() function was incorrectly clearing persistent data arrays during initialization, preventing restored features from appearing on the map. Data now properly persists across page reloads.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/wme-quick-hn-importer-for-NP/main/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
-  const forumURL = 'https://github.com/kid4rm90s/wme-quick-hn-importer-for-NP/issues';
+  const downloadUrl = 'https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
+  const forumURL = 'https://greasyfork.org/en/scripts/566190-wme-quick-hn-importer-for-np/feedback';
 
 let wmeSDK;
 const LAYER_NAME = 'Quick HN importer for NP';
@@ -2452,9 +2452,7 @@ function log(...args) {
       scriptName,
       scriptVersion,
       downloadUrl,
-      GM_xmlhttpRequest,
-      downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
-      /@version\s+(.+)/i, // metaRegExp - extracts version from @version tag
+      GM_xmlhttpRequest
     );
     updateMonitor.start(2, true); // Check every 2 hours, check immediately
 
@@ -2471,6 +2469,8 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.5 - 2024-06-12
+  - Published to GreasyFork after final testing.
   Version 1.2.4 - 2024-06-12
   - Fixed critical bug where data loaded from IndexedDB would not display after page refresh. The Repository.clearAll() function was incorrectly clearing persistent data arrays during initialization, preventing restored features from appearing on the map. Data now properly persists across page reloads.
   Version 1.2.3 - 2024-06-12
