@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.6.1
+// @version      1.2.6.2
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,7 +29,14 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7:</strong><br> - Fixed 3D coordinate handling: KML/KMZ files with elevation data now import correctly. Added automatic Z-coordinate stripping to ensure compatibility with 2D-only operations.<br> - Enhanced attribute selection dialog: Now displays sample feature data (first 5 features with all properties) before import, making it much easier to identify which attributes contain street names and house numbers.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>New in v1.2.6.2:</strong><br>
+- Street name attribute is now optional when importing house number data.<br>
+- Confirmation dialog for adding house numbers only appears if both street name and house number are selected.<br>
+- House number validation improved: if street name is not selected, duplicate detection works across all streets.<br>
+- Already-added house numbers are shown transparent, even when only the number matches.<br>
+- Displayed house number layer boxes are now more compact.<br>
+<br>
+<strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -2128,7 +2135,8 @@ function init() {
     layerName: LAYER_NAME,
     styleContext: {
       fillColor: ({ feature }) => feature.properties && feature.properties.street && !streetNames.has(feature.properties.street.toLowerCase()) ? '#bb3333' : (feature.properties.street && selectedStreetNames.includes(feature.properties.street.toLowerCase()) ? '#99ee99' : '#fb9c4f'),
-      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
+      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 3, 12) : 12,
+      //radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
       opacity: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? 0.3 : 1,
       cursor: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? '' : 'pointer',
       title: ({ feature }) => feature.properties && feature.properties.number ? (feature.properties.street ? feature.properties.street + ' - ' + feature.properties.number : feature.properties.number) : '',
@@ -2142,11 +2150,12 @@ function init() {
           fontColor: '#111111',
           fontOpacity: '${opacity}',
           fontWeight: 'bold',
+          fontSize: '12px', // added font size for better visibility
           strokeColor: '#ffffff',
           strokeOpacity: '${opacity}',
           strokeWidth: 2,
           pointRadius: '${radius}',
-          graphicName: 'square',
+          graphicName: 'circle', // changed from square to circle for better aesthetics, can be adjusted back if needed
           label: '${number}',
           cursor: '${cursor}',
           title: '${title}'
@@ -2598,6 +2607,13 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.6.2 - 2026-02-14
+  <strong>New in v1.2.6.2:</strong><br>
+- Street name attribute is now optional when importing house number data.<br>
+- Confirmation dialog for adding house numbers only appears if both street name and house number are selected.<br>
+- House number validation improved: if street name is not selected, duplicate detection works across all streets.<br>
+- Already-added house numbers are shown transparent, even when only the number matches.<br>
+- Displayed house number layer boxes are now more compact.<br>
   Version 1.2.6 - 2026-02-14
   - Fixed 3D coordinate handling: Added stripZ() and stripZFromGeoJSON() functions to automatically remove elevation/Z coordinates from all geometries after file parsing. This resolves "Only 2D points are supported" errors when importing KML/KMZ files containing 3D coordinates (longitude, latitude, elevation). The fix ensures compatibility with turf.js operations that only support 2D points.
   - Enhanced attribute selection dialog: Improved UI to display sample feature data (first 5 features with all their properties) before import. Users can now see actual data values in a scrollable, formatted view, making it much easier to identify which attributes contain street names and house numbers, especially with unfamiliar data formats or non-English languages.
