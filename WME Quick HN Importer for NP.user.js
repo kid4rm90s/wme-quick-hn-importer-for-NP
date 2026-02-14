@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.5.2
+// @version      1.2.6
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -13,13 +13,13 @@
 // @connect      geonep.com.np
 // @require      https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.19.10/proj4.min.js
-// @require      https://update.greasyfork.org/scripts/524747/1542062/GeoKMLer.js
-// @require      https://update.greasyfork.org/scripts/527113/1538395/GeoKMZer.js
-// @require      https://update.greasyfork.org/scripts/523986/1575829/GeoWKTer.js
-// @require      https://update.greasyfork.org/scripts/523870/1534525/GeoGPXer.js
-// @require      https://update.greasyfork.org/scripts/526229/1537672/GeoGMLer.js
-// @require      https://update.greasyfork.org/scripts/526996/1537647/GeoSHPer.js
-// @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
+// @require      https://update.greasyfork.org/scripts/524747/GeoKMLer.js
+// @require      https://update.greasyfork.org/scripts/527113/GeoKMZer.js
+// @require      https://update.greasyfork.org/scripts/523986/GeoWKTer.js
+// @require      https://update.greasyfork.org/scripts/523870/GeoGPXer.js
+// @require      https://update.greasyfork.org/scripts/526229/GeoGMLer.js
+// @require      https://update.greasyfork.org/scripts/526996/GeoSHPer.js
+// @require      https://update.greasyfork.org/scripts/560385/WazeToastr.js
 // @downloadURL https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js
 // @updateURL https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.meta.js
 
@@ -29,7 +29,7 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Fixed :</strong><br> - Fixed critical bug where data loaded from IndexedDB would not display after page refresh. The Repository.clearAll() function was incorrectly clearing persistent data arrays during initialization, preventing restored features from appearing on the map. Data now properly persists across page reloads.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>New in v1.2.7:</strong><br> - Fixed 3D coordinate handling: KML/KMZ files with elevation data now import correctly. Added automatic Z-coordinate stripping to ensure compatibility with 2D-only operations.<br> - Enhanced attribute selection dialog: Now displays sample feature data (first 5 features with all properties) before import, making it much easier to identify which attributes contain street names and house numbers.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -749,14 +749,49 @@ function setupProjectionsAndTransforms() {
 }
 
 // Convert coordinates from source CRS to target CRS
-function convertCoordinates(sourceCRS, targetCRS, coordinates) {
-  function stripZ(coords) {
-    if (Array.isArray(coords[0])) {
-      return coords.map(stripZ);
-    }
-    return coords.slice(0, 2);
+// Strip Z coordinates from coordinate arrays
+function stripZ(coords) {
+  if (Array.isArray(coords[0])) {
+    return coords.map(stripZ);
+  }
+  return coords.slice(0, 2);
+}
+
+// Strip Z coordinates from all geometries in a GeoJSON object
+function stripZFromGeoJSON(geoJSON) {
+  if (!geoJSON) return geoJSON;
+
+  function stripGeometry(geometry) {
+    if (!geometry || !geometry.coordinates) return geometry;
+    
+    return {
+      ...geometry,
+      coordinates: stripZ(geometry.coordinates)
+    };
   }
 
+  if (geoJSON.type === 'FeatureCollection') {
+    return {
+      ...geoJSON,
+      features: geoJSON.features.map(feature => ({
+        ...feature,
+        geometry: stripGeometry(feature.geometry)
+      }))
+    };
+  } else if (geoJSON.type === 'Feature') {
+    return {
+      ...geoJSON,
+      geometry: stripGeometry(geoJSON.geometry)
+    };
+  } else if (geoJSON.coordinates) {
+    // Handle bare geometry
+    return stripGeometry(geoJSON);
+  }
+
+  return geoJSON;
+}
+
+function convertCoordinates(sourceCRS, targetCRS, coordinates) {
   const strippedCoords = stripZ(coordinates);
   if (Array.isArray(strippedCoords[0])) {
     return strippedCoords.map(coord => convertCoordinates(sourceCRS, targetCRS, coord));
@@ -813,6 +848,8 @@ function transformGeoJSON(geoJSON, sourceCRS, targetCRS) {
 function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
   return new Promise((resolve, reject) => {
     const allAttributes = new Set();
+    const sampleSize = Math.min(5, features.length);
+    
     features.slice(0, Math.min(10, features.length)).forEach(feature => {
       if (feature.properties) {
         Object.keys(feature.properties).forEach(key => allAttributes.add(key));
@@ -826,7 +863,7 @@ function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
     }
 
     const modal = document.createElement('div');
-    modal.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: inherit; padding: 20px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 10000; max-width: 500px; max-height: 80vh; overflow-y: auto;';
+    modal.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: inherit; padding: 20px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 10000; max-width: 600px; max-height: 80vh; overflow-y: auto;';
 
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999;';
@@ -837,8 +874,46 @@ function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
     modal.appendChild(title);
 
     const info = document.createElement('p');
-    info.textContent = `Found ${nbFeatures} features. Please select which attributes to map:`;
+    info.textContent = `Found ${nbFeatures} features. Review sample data below and select which attributes to map:`;
     modal.appendChild(info);
+
+    // Sample features display section
+    const sampleSection = document.createElement('div');
+    sampleSection.style.cssText = 'margin: 15px 0; padding: 10px; border: 1px solid #ccc; border-radius: 4px; max-height: 250px; overflow-y: auto; background: rgba(0,0,0,0.05);';
+    
+    const sampleTitle = document.createElement('h4');
+    sampleTitle.textContent = `Sample Features (showing ${sampleSize} of ${nbFeatures}):`;
+    sampleTitle.style.cssText = 'margin: 0 0 10px 0; font-size: 14px; font-weight: bold;';
+    sampleSection.appendChild(sampleTitle);
+
+    features.slice(0, sampleSize).forEach((feature, index) => {
+      const featureDiv = document.createElement('div');
+      featureDiv.style.cssText = 'margin-bottom: 15px; padding: 8px; background: rgba(255,255,255,0.1); border-radius: 3px; font-size: 12px;';
+      
+      const featureTitle = document.createElement('div');
+      featureTitle.textContent = `Feature ${index + 1}`;
+      featureTitle.style.cssText = 'font-weight: bold; margin-bottom: 5px; color: #2196F3;';
+      featureDiv.appendChild(featureTitle);
+
+      if (feature.properties) {
+        Object.entries(feature.properties).forEach(([key, value]) => {
+          const propDiv = document.createElement('div');
+          propDiv.style.cssText = 'margin-left: 10px; padding: 2px 0; font-family: monospace;';
+          propDiv.innerHTML = `<span style="color: #4CAF50; font-weight: bold;">${key}:</span> <span style="color: inherit;">${value !== null && value !== undefined ? String(value) : 'null'}</span>`;
+          featureDiv.appendChild(propDiv);
+        });
+      }
+
+      sampleSection.appendChild(featureDiv);
+    });
+
+    modal.appendChild(sampleSection);
+
+    // Attribute selection section
+    const selectionTitle = document.createElement('h4');
+    selectionTitle.textContent = 'Select Mapping:';
+    selectionTitle.style.cssText = 'margin: 15px 0 10px 0; font-size: 14px; font-weight: bold;';
+    modal.appendChild(selectionTitle);
 
     const selectors = {};
     attributeTypes.forEach(attrType => {
@@ -1021,6 +1096,9 @@ async function parseFileFormat(fileContent, fileext, filename) {
         }]
       };
     }
+
+    // Strip Z coordinates from all features to ensure 2D compatibility
+    geoJSON = stripZFromGeoJSON(geoJSON);
 
     return geoJSON;
   } catch (error) {
@@ -2469,6 +2547,11 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.6 - 2026-02-14
+  - Fixed 3D coordinate handling: Added stripZ() and stripZFromGeoJSON() functions to automatically remove elevation/Z coordinates from all geometries after file parsing. This resolves "Only 2D points are supported" errors when importing KML/KMZ files containing 3D coordinates (longitude, latitude, elevation). The fix ensures compatibility with turf.js operations that only support 2D points.
+  - Enhanced attribute selection dialog: Improved UI to display sample feature data (first 5 features with all their properties) before import. Users can now see actual data values in a scrollable, formatted view, making it much easier to identify which attributes contain street names and house numbers, especially with unfamiliar data formats or non-English languages.
+  Version 1.2.5.2 - 2024-06-13
+  - Minor updates and improvements.
   Version 1.2.5 - 2024-06-12
   - Published to GreasyFork after final testing.
   Version 1.2.4 - 2024-06-12
