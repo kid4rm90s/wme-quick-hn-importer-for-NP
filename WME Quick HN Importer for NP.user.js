@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.7.2
+// @version      1.2.7.3
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,8 +29,9 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7.2:</strong><br>
-- Adjusted the size of the circle appearing on the map based on the house number length.<br>
+  const updateMessage = `<strong>New in v1.2.7.3:</strong><br>
+- Added street pair caching: Remember your choice when street names don't match for X minutes.<br>
+- When the same street mismatch occurs again within the time window, automatically applies the cached decision without prompting.<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
@@ -106,6 +107,37 @@ let cleanup = {
     // Deactivate shortcuts
     Shortcut.deactivate();
   }
+};
+
+// Cache for remembered street name pairs with expiration
+let streetNameCache = {};
+
+// Helper function to create cache key from street names
+const createCacheKey = (originalStreet, targetStreet) => {
+  return `${originalStreet}|||${targetStreet}`;
+};
+
+// Helper function to check if a street pair is in cache and not expired
+const isCachedStreetPair = (originalStreet, targetStreet) => {
+  const key = createCacheKey(originalStreet, targetStreet);
+  if (streetNameCache[key]) {
+    const cacheEntry = streetNameCache[key];
+    if (Date.now() < cacheEntry.expiresAt) {
+      return true; // Cache is still valid
+    } else {
+      delete streetNameCache[key]; // Remove expired cache entry
+      return false;
+    }
+  }
+  return false;
+};
+
+// Helper function to add a street pair to cache
+const addToCacheStreetPair = (originalStreet, targetStreet, durationMinutes) => {
+  const key = createCacheKey(originalStreet, targetStreet);
+  const expiresAt = Date.now() + (durationMinutes * 60 * 1000);
+  streetNameCache[key] = { expiresAt: expiresAt };
+  log(`Cached street pair: "${originalStreet}" -> "${targetStreet}" for ${durationMinutes} minutes`);
 };
 
 (unsafeWindow || window).SDK_INITIALIZED.then(async () => {
@@ -2604,21 +2636,62 @@ function init() {
         return;
       }
       
-      // Show confirmation dialog only when street name was provided but doesn't match
-      WazeToastr.Alerts.confirm(
+      // Check if this street pair is already cached from a previous decision
+      if (isCachedStreetPair(feature.properties.street, nearestStreetName)) {
+        log(`Using cached decision for "${feature.properties.street}" -> "${nearestStreetName}"`);
+        addHouseNumber(nearestSegment, feature);
+        return;
+      }
+      
+      // Show prompt dialog when street name was provided but doesn't match
+      log(`[PROMPT] Showing prompt for street mismatch:`);
+      log(`[PROMPT]   - Feature street: "${feature.properties.street}"`);
+      log(`[PROMPT]   - Nearest segment street: "${nearestStreetName}"`);
+      log(`[PROMPT]   - House number: "${feature.properties.number}"`);
+      
+      WazeToastr.Alerts.prompt(
         scriptName,
-        `Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?`,
-        function() {
-          // OK callback - user confirmed
-          addHouseNumber(nearestSegment, feature);
+        `Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?\n\nEnter the number of minutes to remember this choice (0 = don't remember):`,
+        '0',
+        function(inputValue) {
+          try {
+            log(`[PROMPT] OK callback executed`);
+            log(`[PROMPT] Input value received: "${inputValue}" (type: ${typeof inputValue})`);
+            
+            // Convert string to number
+            const duration = Number(inputValue);
+            log(`[PROMPT] Converted to number: ${duration} (type: ${typeof duration})`);
+            log(`[PROMPT] isNaN: ${isNaN(duration)}`);
+            
+            if (!isNaN(duration) && duration >= 0) {
+              log(`[PROMPT] Duration validation passed: ${duration} >= 0`);
+              
+              if (duration > 0) {
+                log(`[PROMPT] Caching street pair for ${duration} minutes: "${feature.properties.street}" -> "${nearestStreetName}"`);
+                addToCacheStreetPair(feature.properties.street, nearestStreetName, duration);
+                log(`[PROMPT] Street pair cached successfully`);
+              } else {
+                log(`[PROMPT] Duration is 0 - not caching street pair`);
+              }
+              
+              log(`[PROMPT] Adding house number "${feature.properties.number}" to segment ${nearestSegment.id}`);
+              addHouseNumber(nearestSegment, feature);
+              log(`[PROMPT] House number added successfully`);
+            } else {
+              log(`[PROMPT] Duration validation FAILED: isNaN=${isNaN(duration)}, value=${duration}`);
+              WazeToastr.Alerts.warning(scriptName, 'Invalid input. Please enter a valid number of minutes.');
+            }
+          } catch (error) {
+            log(`[PROMPT] ERROR in OK callback: ${error.message}`);
+            log(`[PROMPT] Stack trace: ${error.stack}`);
+          }
         },
         function() {
-          // Cancel callback - user cancelled, do nothing
-          log('User cancelled house number addition');
+          log(`[PROMPT] Cancel clicked - User cancelled house number addition`);
         },
-        "Add to Segment",
-        "Cancel"
+        'text'  // Use 'text' input type for reliability and full control
       );
+      log(`[PROMPT] Prompt dialog created and shown`);
       return; // Exit early since we're handling async
     }
     
