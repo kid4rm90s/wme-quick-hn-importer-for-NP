@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.7
+// @version      1.2.7.1
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,18 +29,14 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-const updateMessage = `<strong>New in v1.2.7:</strong><br>
+  const updateMessage = `<strong>New in v1.2.7.1:</strong><br>
+- Fixed an issue where the house number were added to the original location than the shifted location when the offset was applied.<br>
 - Nepali text display added to house number hover tooltips.<br>
 - For uploaded files: Select a "Nepali Name" attribute during import to display Nepali text on hover (optional).<br>
 - For Metric House API data: Automatically displays Nepali street names from the API when hovering over features.<br>
 - Nepali text is automatically converted from Preeti font to Unicode for proper display.<br>
 - Hover format: Street Name - House Number followed by Nepali text on a new line.<br>
 - House number layer can be shifted based on the given offset input.<br>
-<br>
-<strong>Previous updates:</strong><br>
-- Street name attribute is now optional when importing house number data.<br>
-- House number validation improved: duplicate detection works across all streets when street name is not selected.<br>
-- Already-added house numbers are shown transparent, even when only the number matches.<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
@@ -2765,9 +2761,32 @@ function updateLayer() {
   }
   
   Messages.show('loading');
-  const currentExtent = wmeSDK.Map.getMapExtent();
   
-  Repository.getExtentData(currentExtent).then((features) => {
+  // Calculate expanded extent to account for offset when fetching data
+  const currentExtent = wmeSDK.Map.getMapExtent();
+  let expandedExtent = currentExtent;
+  
+  if (hnLayerOffset.x !== 0 || hnLayerOffset.y !== 0) {
+    // Expand the extent to cover the offset area
+    // Convert offset from meters to degrees (approximate)
+    const metersPerDegree = 111320; // at equator
+    const offsetLonDegrees = Math.abs(hnLayerOffset.x) / metersPerDegree;
+    const offsetLatDegrees = Math.abs(hnLayerOffset.y) / metersPerDegree;
+    
+    expandedExtent = [
+      currentExtent[0] - offsetLonDegrees,
+      currentExtent[1] - offsetLatDegrees,
+      currentExtent[2] + offsetLonDegrees,
+      currentExtent[3] + offsetLatDegrees
+    ];
+    
+    if (debug) {
+      log(`Offset detected: X=${hnLayerOffset.x}m, Y=${hnLayerOffset.y}m`);
+      log(`Expanded extent for data fetch to include offset areas`);
+    }
+  }
+  
+  Repository.getExtentData(expandedExtent).then((features) => {
     // Always clear the layer first
     wmeSDK.Map.removeAllFeaturesFromLayer({
       layerName: LAYER_NAME
@@ -2776,22 +2795,36 @@ function updateLayer() {
     // Apply offset to features before displaying
     const offsetFeatures = applyHNLayerOffset(features);
     
+    // Update the directory with offset features so that when clicked on the map,
+    // the feature retrieved will have the correct offset geometry
+    const directory = Repository.getDirectory();
+    offsetFeatures.forEach(feature => {
+      directory.set(feature.id, feature);
+    });
+    
+    // Filter to only show features within the current (non-expanded) extent after applying offset
+    const visibleFeatures = offsetFeatures.filter(feature => {
+      const [lon, lat] = feature.geometry.coordinates;
+      return lon >= currentExtent[0] && lon <= currentExtent[2] && 
+             lat >= currentExtent[1] && lat <= currentExtent[3];
+    });
+    
     // Then add new features if any exist
-    if (offsetFeatures && offsetFeatures.length > 0) {
+    if (visibleFeatures && visibleFeatures.length > 0) {
       wmeSDK.Map.addFeaturesToLayer({
         layerName: LAYER_NAME,
-        features: offsetFeatures
+        features: visibleFeatures
       });
     }
     Messages.hide('loading');
     Messages.hide('autocomplete');
     // Pre-fill autocompleteFeatures
     if (selectedStreetNames.length > 0) {
-      autocompleteFeatures = features.filter(feature => 
+      autocompleteFeatures = visibleFeatures.filter(feature => 
         feature.properties.street && 
         selectedStreetNames.includes(feature.properties.street.toLowerCase()) && 
         !isHouseNumberAlreadyAdded(feature) && 
-        turf.booleanContains(turf.bboxPolygon(wmeSDK.Map.getMapExtent()), feature)
+        turf.booleanContains(turf.bboxPolygon(currentExtent), feature)
       );
       if (autocompleteFeatures.length > 0) {
         let params = new Map([
@@ -2961,6 +2994,8 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.7.1 - 2026-02-15
+  - Fixed an issue where the house number were added to the original location than the shifted location when the offset was applied.<br>
   Version 1.2.7 - 2026-02-15
   - Nepali text display added to house number hover tooltips.<br>
 - For uploaded files: Select a "Nepali Name" attribute during import to display Nepali text on hover (optional).<br>
