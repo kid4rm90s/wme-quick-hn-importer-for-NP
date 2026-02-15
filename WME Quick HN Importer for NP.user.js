@@ -946,6 +946,7 @@ function showHNLayerOffsetDialog() {
       hnLayerOffset.y += amt;
       updateOffsetDisplay();
       refreshHNLayer();
+    WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the North`, false, false, 2000);
     };
     cell1_2.appendChild(upBtn);
     const cell1_3 = document.createElement('td');
@@ -968,6 +969,7 @@ function showHNLayerOffsetDialog() {
       hnLayerOffset.x -= amt;
       updateOffsetDisplay();
       refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the West`, false, false, 2000);
     };
     cell2_1.appendChild(leftBtn);
     
@@ -985,6 +987,7 @@ function showHNLayerOffsetDialog() {
       hnLayerOffset.x += amt;
       updateOffsetDisplay();
       refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the East`, false, false, 2000);
     };
     cell2_3.appendChild(rightBtn);
     
@@ -1008,6 +1011,7 @@ function showHNLayerOffsetDialog() {
       hnLayerOffset.y -= amt;
       updateOffsetDisplay();
       refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the South`, false, false, 2000);
     };
     cell3_2.appendChild(downBtn);
     const cell3_3 = document.createElement('td');
@@ -1042,6 +1046,7 @@ function showHNLayerOffsetDialog() {
       hnLayerOffset = { x: 0, y: 0 };
       updateOffsetDisplay();
       refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, 'Layer offset has been reset to <b>0 Metres</b>', false, false, 2000);
     };
     body.appendChild(resetBtn);
     
