@@ -1531,10 +1531,24 @@ async function handleFileImport(file) {
         const maxLon = Math.max(...allCoords.map(c => c[0]));
         const minLat = Math.min(...allCoords.map(c => c[1]));
         const maxLat = Math.max(...allCoords.map(c => c[1]));
-        const featureBounds = [minLon, minLat, maxLon, maxLat];
+
+                // Calculate center point
+        const centerLon = (minLon + maxLon) / 2;
+        const centerLat = (minLat + maxLat) / 2;
+
+       WazeToastr.Alerts.success('Import Success', `Loaded ${features.length} features from ${fileName}. Zooming to data location...`);
         
-        WazeToastr.Alerts.success('Import Success', `Loaded ${features.length} features from ${fileName}`);
-        
+        // Zoom to the uploaded features using the correct SDK method
+        try {
+            wmeSDK.Map.setMapCenter({ 
+            lonLat: { lon: centerLon, lat: centerLat }, 
+            zoomLevel: 19 
+            });
+        } catch (e) {
+          log('Error zooming to features: ' + e);
+          WazeToastr.Alerts.warning('Zoom Notice', 'Please pan/zoom to the data location manually');
+        }        
+
         resolve(features);
       } catch (error) {
         log('Error processing file: ' + error);
