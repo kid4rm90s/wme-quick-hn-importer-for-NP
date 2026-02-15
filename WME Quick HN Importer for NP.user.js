@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.6
+// @version      1.2.6.2
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,7 +29,14 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7:</strong><br> - Fixed 3D coordinate handling: KML/KMZ files with elevation data now import correctly. Added automatic Z-coordinate stripping to ensure compatibility with 2D-only operations.<br> - Enhanced attribute selection dialog: Now displays sample feature data (first 5 features with all properties) before import, making it much easier to identify which attributes contain street names and house numbers.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>New in v1.2.6.2:</strong><br>
+- Street name attribute is now optional when importing house number data.<br>
+- Confirmation dialog for adding house numbers only appears if both street name and house number are selected.<br>
+- House number validation improved: if street name is not selected, duplicate detection works across all streets.<br>
+- Already-added house numbers are shown transparent, even when only the number matches.<br>
+- Displayed house number layer boxes are now more compact.<br>
+<br>
+<strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -918,7 +925,9 @@ function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
     const selectors = {};
     attributeTypes.forEach(attrType => {
       const label = document.createElement('label');
-      label.textContent = `${attrType.charAt(0).toUpperCase() + attrType.slice(1)} attribute:`;
+      const isRequired = attrType === 'number';
+      const optionalText = isRequired ? '' : ' (optional)';
+      label.textContent = `${attrType.charAt(0).toUpperCase() + attrType.slice(1)} attribute${optionalText}:`;
       label.style.display = 'block';
       label.style.marginTop = '10px';
       modal.appendChild(label);
@@ -950,14 +959,13 @@ function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
     importBtn.style.cssText = 'flex: 1; padding: 10px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;';
     importBtn.onclick = () => {
       const selectedAttrs = {};
-      let allSelected = true;
       attributeTypes.forEach(attrType => {
         selectedAttrs[attrType] = selectors[attrType].value;
-        if (!selectedAttrs[attrType]) allSelected = false;
       });
 
-      if (!allSelected) {
-        WazeToastr.Alerts.warning('Import Warning', 'Please select all required attributes');
+      // Only 'number' attribute is required; 'street' is optional
+      if (!selectedAttrs['number']) {
+        WazeToastr.Alerts.warning('Import Warning', 'Please select the Number attribute (required)');
         return;
       }
 
@@ -1154,10 +1162,11 @@ async function handleFileImport(file) {
 
         // Convert to repository format
         const features = geoJSON.features.map((feature, idx) => {
-          const streetValue = feature.properties[selectedAttrs.street];
+          const streetValue = selectedAttrs.street ? feature.properties[selectedAttrs.street] : null;
           const numberValue = feature.properties[selectedAttrs.number];
 
-          if (!streetValue || !numberValue) {
+          // Only number is required; street is optional
+          if (!numberValue) {
             return null;
           }
 
@@ -1172,11 +1181,14 @@ async function handleFileImport(file) {
           }
 
           // Nepal road name mapping: Marg -> Marga, Street -> St, normalize whitespace
-          let normalizedStreet = cleanupName(String(streetValue))
-            .replace(/\s+/g, ' ')
-            .trim()
-            .replace(/\bMarg\b/g, 'Marga')
-            .replace(/\bStreet$/i, 'St');
+          let normalizedStreet = '';
+          if (streetValue) {
+            normalizedStreet = cleanupName(String(streetValue))
+              .replace(/\s+/g, ' ')
+              .trim()
+              .replace(/\bMarg\b/g, 'Marga')
+              .replace(/\bStreet$/i, 'St');
+          }
 
           return {
             type: 'Feature',
@@ -1299,7 +1311,7 @@ let Shortcut = function() {
         segmentId: nearestSegment.id
       });
       // Add to streetNumbers
-      let nameMatches = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0;
+      let nameMatches = feature.properties.street ? wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0 : false;
       if (nameMatches) {
         if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
           streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
@@ -2122,11 +2134,12 @@ function init() {
   wmeSDK.Map.addLayer({
     layerName: LAYER_NAME,
     styleContext: {
-      fillColor: ({ feature }) => feature.properties && !streetNames.has(feature.properties.street.toLowerCase()) ? '#bb3333' : (selectedStreetNames.includes(feature.properties.street.toLowerCase()) ? '#99ee99' : '#fb9c4f'),
-      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
-      opacity: ({ feature }) => feature.properties && streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number)) ? 0.3 : 1,
-      cursor: ({ feature }) => feature.properties && streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number)) ? '' : 'pointer',
-      title: ({ feature }) => feature.properties && feature.properties.number && feature.properties.street ? feature.properties.street + ' - ' + feature.properties.number : '',
+      fillColor: ({ feature }) => feature.properties && feature.properties.street && !streetNames.has(feature.properties.street.toLowerCase()) ? '#bb3333' : (feature.properties.street && selectedStreetNames.includes(feature.properties.street.toLowerCase()) ? '#99ee99' : '#fb9c4f'),
+      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 3, 12) : 12,
+      //radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
+      opacity: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? 0.3 : 1,
+      cursor: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? '' : 'pointer',
+      title: ({ feature }) => feature.properties && feature.properties.number ? (feature.properties.street ? feature.properties.street + ' - ' + feature.properties.number : feature.properties.number) : '',
       number: ({ feature }) => feature.properties && feature.properties.number ? feature.properties.number : ''
     },
     styleRules: [
@@ -2137,11 +2150,12 @@ function init() {
           fontColor: '#111111',
           fontOpacity: '${opacity}',
           fontWeight: 'bold',
+          fontSize: '12px', // added font size for better visibility
           strokeColor: '#ffffff',
           strokeOpacity: '${opacity}',
           strokeWidth: 2,
           pointRadius: '${radius}',
-          graphicName: 'square',
+          graphicName: 'circle', // changed from square to circle for better aesthetics, can be adjusted back if needed
           label: '${number}',
           cursor: '${cursor}',
           title: '${title}'
@@ -2181,7 +2195,7 @@ function init() {
 
   let layerFeatureClickHandler = (clickEvent) => {
     let feature = Repository.getFeatureById(clickEvent.featureId);
-    if (streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number))) {
+    if (isHouseNumberAlreadyAdded(feature)) {
       return;
     }
     
@@ -2200,7 +2214,7 @@ function init() {
         segmentId: segment.id
       });
       // Add to streetNumbers
-      let nameMatches = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0;
+      let nameMatches = feature.properties.street ? wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0 : false;
       if (nameMatches) {
         if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
           streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
@@ -2217,7 +2231,8 @@ function init() {
       
       // Check if we found any segment at all
       if (!nearestSegment) {
-        WazeToastr.Alerts.error('No Segment Found', `Cannot add house number - no nearby segments found for "${feature.properties.street}"`);
+        const streetMsg = feature.properties.street ? ` for "${feature.properties.street}"` : '';
+        WazeToastr.Alerts.error('No Segment Found', `Cannot add house number - no nearby segments found${streetMsg}`);
         return;
       }
       
@@ -2240,7 +2255,14 @@ function init() {
         return;
       }
       
-      // Show confirmation dialog with callbacks
+      // If no street name was provided during import (street attribute not selected),
+      // directly add to nearest segment without confirmation
+      if (!feature.properties.street || feature.properties.street.trim() === '') {
+        addHouseNumber(nearestSegment, feature);
+        return;
+      }
+      
+      // Show confirmation dialog only when street name was provided but doesn't match
       WazeToastr.Alerts.confirm(
         scriptName,
         `Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?`,
@@ -2411,7 +2433,12 @@ function updateLayer() {
     Messages.hide('autocomplete');
     // Pre-fill autocompleteFeatures
     if (selectedStreetNames.length > 0) {
-      autocompleteFeatures = features.filter(feature => selectedStreetNames.includes(feature.properties.street.toLowerCase()) && (!streetNumbers.has(feature.properties.street.toLowerCase()) || (streetNumbers.has(feature.properties.street.toLowerCase()) && !streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number)))) && turf.booleanContains(turf.bboxPolygon(wmeSDK.Map.getMapExtent()), feature));
+      autocompleteFeatures = features.filter(feature => 
+        feature.properties.street && 
+        selectedStreetNames.includes(feature.properties.street.toLowerCase()) && 
+        !isHouseNumberAlreadyAdded(feature) && 
+        turf.booleanContains(turf.bboxPolygon(wmeSDK.Map.getMapExtent()), feature)
+      );
       if (autocompleteFeatures.length > 0) {
         let params = new Map([
           ['.qhni-number', autocompleteFeatures.length],
@@ -2433,7 +2460,10 @@ function updateLayer() {
 }
 
 function findNearestSegment(feature, matchName) {
-  let streetIds = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).map(street => street.id);
+  let streetIds = [];
+  if (feature.properties.street) {
+    streetIds = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).map(street => street.id);
+  }
   if (!matchName || streetIds.length > 0) {
     let nearestSegment = wmeSDK.DataModel.Segments.getAll()
       .filter(segment => !matchName || streetIds.includes(segment.primaryStreetId) || streetIds.filter(streetId => segment.alternateStreetIds?.includes(streetId)).length > 0)
@@ -2444,6 +2474,36 @@ function findNearestSegment(feature, matchName) {
     return nearestSegment.distance == Infinity ? null : nearestSegment;
   }
   return null;
+}
+
+/**
+ * Check if a house number is already added to the map
+ * @param {Object} feature - The feature to check
+ * @returns {boolean} - True if house number is already added
+ */
+function isHouseNumberAlreadyAdded(feature) {
+  if (!feature.properties || !feature.properties.number) {
+    return false;
+  }
+  
+  const simplifiedNumber = simplifyNumber(feature.properties.number);
+  
+  // If feature has a street name (attribute was selected during import),
+  // only check if this specific street+number combo exists
+  if (feature.properties.street && feature.properties.street.trim() !== '') {
+    const streetLower = feature.properties.street.toLowerCase();
+    return streetNumbers.has(streetLower) && streetNumbers.get(streetLower).has(simplifiedNumber);
+  }
+  
+  // If no street name (attribute not selected during import),
+  // check if the number exists in ANY street
+  for (const [street, numbers] of streetNumbers.entries()) {
+    if (numbers.has(simplifiedNumber)) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 function simplifyNumber(number) {
@@ -2547,6 +2607,13 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.6.2 - 2026-02-14
+  <strong>New in v1.2.6.2:</strong><br>
+- Street name attribute is now optional when importing house number data.<br>
+- Confirmation dialog for adding house numbers only appears if both street name and house number are selected.<br>
+- House number validation improved: if street name is not selected, duplicate detection works across all streets.<br>
+- Already-added house numbers are shown transparent, even when only the number matches.<br>
+- Displayed house number layer boxes are now more compact.<br>
   Version 1.2.6 - 2026-02-14
   - Fixed 3D coordinate handling: Added stripZ() and stripZFromGeoJSON() functions to automatically remove elevation/Z coordinates from all geometries after file parsing. This resolves "Only 2D points are supported" errors when importing KML/KMZ files containing 3D coordinates (longitude, latitude, elevation). The fix ensures compatibility with turf.js operations that only support 2D points.
   - Enhanced attribute selection dialog: Improved UI to display sample feature data (first 5 features with all their properties) before import. Users can now see actual data values in a scrollable, formatted view, making it much easier to identify which attributes contain street names and house numbers, especially with unfamiliar data formats or non-English languages.
