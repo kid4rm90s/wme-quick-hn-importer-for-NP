@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.7.1
+// @version      1.2.7.2
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,14 +29,8 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7.1:</strong><br>
-- Fixed an issue where the house number were added to the original location than the shifted location when the offset was applied.<br>
-- Nepali text display added to house number hover tooltips.<br>
-- For uploaded files: Select a "Nepali Name" attribute during import to display Nepali text on hover (optional).<br>
-- For Metric House API data: Automatically displays Nepali street names from the API when hovering over features.<br>
-- Nepali text is automatically converted from Preeti font to Unicode for proper display.<br>
-- Hover format: Street Name - House Number followed by Nepali text on a new line.<br>
-- House number layer can be shifted based on the given offset input.<br>
+  const updateMessage = `<strong>New in v1.2.7.2:</strong><br>
+- Adjusted the size of the circle appearing on the map based on the house number length.<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
@@ -2453,8 +2447,9 @@ function init() {
     layerName: LAYER_NAME,
     styleContext: {
       fillColor: ({ feature }) => feature.properties && feature.properties.street && !streetNames.has(feature.properties.street.toLowerCase()) ? '#bb3333' : (feature.properties.street && selectedStreetNames.includes(feature.properties.street.toLowerCase()) ? '#99ee99' : '#fb9c4f'),
-      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 4, 10) : 10,
+      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(8 + feature.properties.number.length * 2, 10) : 10,
       //radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
+      //radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(6 + feature.properties.number.length * 3, 10) : 10,
       opacity: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? 0.3 : 1,
       cursor: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? '' : 'pointer',
       title: ({ feature }) => {
@@ -2994,6 +2989,8 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+  Version 1.2.7.2 - 2026-02-15
+  - Adjusted the size of the circle appearing on the map based on the house number length
   Version 1.2.7.1 - 2026-02-15
   - Fixed an issue where the house number were added to the original location than the shifted location when the offset was applied.<br>
   Version 1.2.7 - 2026-02-15
