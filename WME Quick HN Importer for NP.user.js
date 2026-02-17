@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.7.3
+// @version      1.2.7.4
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,9 +29,9 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7.3:</strong><br>
-- Added street pair caching: Remember your choice when street names don't match for X minutes.<br>
-- When the same street mismatch occurs again within the time window, automatically applies the cached decision without prompting.<br>
+  const updateMessage = `<strong>New in v1.2.7.4:</strong><br>
+- Added display of version number in script tab<br>
+- Minor bug fixes<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
@@ -2143,12 +2143,17 @@ function createFileUploadUI() {
 
     const title = document.createElement('div');
     title.textContent = 'Quick HN Importer for NP';
-    title.style.cssText = 'font-weight: bold; font-size: 16px; margin-bottom: 15px; border-bottom: 2px solid #4CAF50; padding-bottom: 5px;';
+    title.style.cssText = 'text-align: center; font-weight: bold; font-size: 16px;';
     container.appendChild(title);
+
+    const version = document.createElement('div');
+    version.innerHTML = 'Current Version ' + `${scriptVersion}`;
+    version.style.cssText = 'text-align: center; font-size: 0.9em; margin-bottom: 15px; border-bottom: 2px solid #4CAF50; padding-bottom: 5px;';
+    container.appendChild(version);
 
     const info = document.createElement('div');
     info.textContent = 'Import house numbers from various file formats';
-    info.style.cssText = 'font-size: 12px; margin-bottom: 15px; line-height: 1.4;';
+    info.style.cssText = 'text-align: center; font-size: 12px; margin-bottom: 15px; line-height: 1.4;';
     container.appendChild(info);
 
     const formatsLabel = document.createElement('div');
@@ -2962,7 +2967,7 @@ function isHouseNumberAlreadyAdded(feature) {
 }
 
 function simplifyNumber(number) {
-  return number.replace(/[\/-]/, "_");
+  return number.replace(/[\/-]/, "_").toLowerCase();
 }
 
 function cleanupName(name) {
@@ -3062,6 +3067,9 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+ Version 1.2.7.4: - 2026-02-17
+- Added display of version number in script tab<br>
+- Minor bug fixes<br>
   Version 1.2.7.2 - 2026-02-15
   - Adjusted the size of the circle appearing on the map based on the house number length
   Version 1.2.7.1 - 2026-02-15
