@@ -29,8 +29,8 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7.4:</strong><br>
-- Added display of version number in script tab<br>
+  const updateMessage = `<strong>✨New in v1.2.7.5:</strong><br>
+- 🧰Temp fix for layer opacity not changing when undo is done until SDK fully supports it.<br>
 - Minor bug fixes<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
@@ -2794,10 +2794,9 @@ function init() {
           if (streetName == null || !streetNumbers.has(streetName.toLowerCase())) {
             return;
           }
-          const streetLower = streetName.toLowerCase();
-          streetNumbers.get(streetLower)?.delete(houseNumber);
-          if (streetNumbers.get(streetLower)?.size === 0) {
-            streetNumbers.delete(streetLower);
+          streetNumbers.get(streetName.toLowerCase())?.delete(houseNumber);
+          if (streetNumbers.get(streetName.toLowerCase())?.delete(houseNumber).size == 0) {
+            streetNumbers.delete(streetName.toLowerCase());
           }
         });
       });
@@ -2813,7 +2812,7 @@ function init() {
     })
   );
   
-  
+  //***************using W.model for rebuilding streetNumbers ***************/
   // Rebuilds streetNumbers from the W model (source of truth, always reflects undo/redo state)
   function rebuildStreetNumbers() {
     const W = (unsafeWindow || window).W;
@@ -2896,7 +2895,7 @@ function init() {
       }
     })
   );
-  
+  //***************end W.model usage***************/
   updateLayer();
 }
 
