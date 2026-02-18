@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.7.4
+// @version      1.2.7.5
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,8 +29,8 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7.4:</strong><br>
-- Added display of version number in script tab<br>
+  const updateMessage = `<strong>✨New in v1.2.7.5:</strong><br>
+- 🧰Temp fix for layer opacity not changing when undo is done until SDK fully supports it.<br>
 - Minor bug fixes<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
@@ -2812,6 +2812,90 @@ function init() {
     })
   );
   
+  //***************using W.model for rebuilding streetNumbers ***************/
+  // Rebuilds streetNumbers from the W model (source of truth, always reflects undo/redo state)
+  function rebuildStreetNumbers() {
+    const W = (unsafeWindow || window).W;
+    if (!W || !W.model || !W.model.segmentHouseNumbers) {
+      log('rebuildStreetNumbers: W model not available');
+      return;
+    }
+    streetNumbers.clear();
+    W.model.segmentHouseNumbers.getObjectArray().forEach(hn => {
+      const number = hn.getAttribute('number');
+      if (!number) return;
+      const segmentId = hn.getSegmentId ? hn.getSegmentId() : null;
+      if (!segmentId) return;
+      const segment = W.model.segments.getObjectById(segmentId);
+      if (!segment) return;
+      const primaryStreetId = segment.getAttribute('primaryStreetID');
+      const altStreetIds = segment.getAttribute('streetIDs') || [];
+      [primaryStreetId, ...altStreetIds].filter(id => id).forEach(streetId => {
+        const street = W.model.streets.getObjectById(streetId);
+        if (!street) return;
+        const streetName = street.getAttribute('name')?.toLowerCase();
+        if (!streetName) return;
+        if (!streetNumbers.has(streetName)) streetNumbers.set(streetName, new Set());
+        streetNumbers.get(streetName).add(simplifyNumber(number));
+      });
+    });
+    log(`rebuildStreetNumbers: rebuilt with ${streetNumbers.size} streets`);
+  }
+
+  // Refreshes visible layer features to force opacity re-evaluation from current streetNumbers
+  function refreshLayerFeatures() {
+    const currentExtent = wmeSDK.Map.getMapExtent();
+    const directory = Repository.getDirectory();
+    // Directory already contains offset-applied coordinates (updated by updateLayer),
+    // so do NOT apply offset again here to avoid double-offsetting.
+    const visibleFeatures = Array.from(directory.values()).filter(feature => {
+      const [lon, lat] = feature.geometry.coordinates;
+      return lon >= currentExtent[0] && lon <= currentExtent[2] &&
+             lat >= currentExtent[1] && lat <= currentExtent[3];
+    });
+    wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: LAYER_NAME });
+    if (visibleFeatures.length > 0) {
+      wmeSDK.Map.addFeaturesToLayer({ layerName: LAYER_NAME, features: visibleFeatures });
+    }
+  }
+
+  // Add undo/redo event listener to refresh layer when actions are undone
+  cleanup.addEvent(
+    wmeSDK.Events.on({
+      eventName: "wme-after-undo",
+      eventHandler: () => {
+        log('wme-after-undo event - rebuilding streetNumbers from W model and refreshing layer');
+        rebuildStreetNumbers();
+        refreshLayerFeatures();
+      }
+    })
+  );
+  
+  cleanup.addEvent(
+    wmeSDK.Events.on({
+      eventName: "wme-after-redo-clear",
+      eventHandler: () => {
+        log('wme-after-redo-clear event - rebuilding streetNumbers from W model and refreshing layer');
+        rebuildStreetNumbers();
+        refreshLayerFeatures();
+      }
+    })
+  );
+
+  // After save, IDs change from temp to permanent which can desync streetNumbers
+  cleanup.addEvent(
+    wmeSDK.Events.on({
+      eventName: "wme-data-model-objects-saved",
+      eventHandler: (eventData) => {
+        if (eventData.dataModelName === "segmentHouseNumbers") {
+          log('segmentHouseNumbers saved - rebuilding streetNumbers from W model');
+          rebuildStreetNumbers();
+          refreshLayerFeatures();
+        }
+      }
+    })
+  );
+  //***************end W.model usage***************/
   updateLayer();
 }
 
