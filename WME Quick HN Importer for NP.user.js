@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.6
+// @version      1.2.7.4
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -9,7 +9,6 @@
 // @grant        unsafeWindow
 // @license      MIT
 // @connect      greasyfork.org
-// @connect      raw.githubusercontent.com
 // @connect      geonep.com.np
 // @require      https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.19.10/proj4.min.js
@@ -20,6 +19,7 @@
 // @require      https://update.greasyfork.org/scripts/526229/GeoGMLer.js
 // @require      https://update.greasyfork.org/scripts/526996/GeoSHPer.js
 // @require      https://update.greasyfork.org/scripts/560385/WazeToastr.js
+// @require https://update.greasyfork.org/scripts/565546/Preeti%20to%20Unicode%20Converter.js
 // @downloadURL https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js
 // @updateURL https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.meta.js
 
@@ -29,7 +29,11 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>New in v1.2.7:</strong><br> - Fixed 3D coordinate handling: KML/KMZ files with elevation data now import correctly. Added automatic Z-coordinate stripping to ensure compatibility with 2D-only operations.<br> - Enhanced attribute selection dialog: Now displays sample feature data (first 5 features with all properties) before import, making it much easier to identify which attributes contain street names and house numbers.<br><br> <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
+  const updateMessage = `<strong>New in v1.2.7.4:</strong><br>
+- Added display of version number in script tab<br>
+- Minor bug fixes<br>
+<br>
+<strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://update.greasyfork.org/scripts/566190/WME%20Quick%20HN%20Importer%20for%20NP.user.js';
@@ -105,6 +109,37 @@ let cleanup = {
   }
 };
 
+// Cache for remembered street name pairs with expiration
+let streetNameCache = {};
+
+// Helper function to create cache key from street names
+const createCacheKey = (originalStreet, targetStreet) => {
+  return `${originalStreet}|||${targetStreet}`;
+};
+
+// Helper function to check if a street pair is in cache and not expired
+const isCachedStreetPair = (originalStreet, targetStreet) => {
+  const key = createCacheKey(originalStreet, targetStreet);
+  if (streetNameCache[key]) {
+    const cacheEntry = streetNameCache[key];
+    if (Date.now() < cacheEntry.expiresAt) {
+      return true; // Cache is still valid
+    } else {
+      delete streetNameCache[key]; // Remove expired cache entry
+      return false;
+    }
+  }
+  return false;
+};
+
+// Helper function to add a street pair to cache
+const addToCacheStreetPair = (originalStreet, targetStreet, durationMinutes) => {
+  const key = createCacheKey(originalStreet, targetStreet);
+  const expiresAt = Date.now() + (durationMinutes * 60 * 1000);
+  streetNameCache[key] = { expiresAt: expiresAt };
+  log(`Cached street pair: "${originalStreet}" -> "${targetStreet}" for ${durationMinutes} minutes`);
+};
+
 (unsafeWindow || window).SDK_INITIALIZED.then(async () => {
   wmeSDK = getWmeSdk({ scriptId: "quick-hn-importer-for-np", scriptName: "Quick HN Importer for NP"});
   let loadResult = { loaded: false, count: 0 };
@@ -164,6 +199,8 @@ let selectedStreetNames = [];
 let autocompleteFeatures = [];
 let streetNumbers = new Map();
 let streetNames = new Set();
+let hnLayerOffset = { x: 0, y: 0 }; // Offset in meters (x=east/west, y=north/south)
+let selectedNepaliAttribute = null; // Stores the selected Nepali attribute for display
 
 /*********************************************************************
  * initDatabase
@@ -624,6 +661,7 @@ async function fetchMetricHouseData() {
               street: normalizedStreet,
               number: number,
               municipality: props.tole_ne_en || `Ward ${wardNo}`,
+              rd_nanep: props.rd_nanep || '', // Store Nepali text for hover display
               type: 'active'
             }
           });
@@ -791,6 +829,289 @@ function stripZFromGeoJSON(geoJSON) {
   return geoJSON;
 }
 
+/*********************************************************************
+ * applyHNLayerOffset
+ * 
+ * Applies the stored offset (x, y in meters) to each feature.
+ * Uses turf.transformTranslate to shift Point geometries.
+ * 
+ * @param {Array} features - Array of GeoJSON features
+ * @returns {Array} Features with offset applied
+ *************************************************************************/
+function applyHNLayerOffset(features) {
+  if (!features || features.length === 0) return features;
+  if (!hnLayerOffset.x && !hnLayerOffset.y) return features;
+  
+  let shifted = features.map(feature => {
+    try {
+      if (feature.geometry && feature.geometry.type === 'Point') {
+        let f = feature;
+        // Apply X offset (east/west): bearing 90=east, 270=west
+        if (hnLayerOffset.x !== 0) {
+          const xBearing = hnLayerOffset.x > 0 ? 90 : 270;
+          f = turf.transformTranslate(f, Math.abs(hnLayerOffset.x), xBearing, { units: 'meters' });
+        }
+        // Apply Y offset (north/south): bearing 0=north, 180=south
+        if (hnLayerOffset.y !== 0) {
+          const yBearing = hnLayerOffset.y > 0 ? 0 : 180;
+          f = turf.transformTranslate(f, Math.abs(hnLayerOffset.y), yBearing, { units: 'meters' });
+        }
+        return f;
+      }
+    } catch (e) {
+      log('Error applying offset to feature: ' + e);
+    }
+    return feature;
+  });
+  
+  return shifted;
+}
+
+/*********************************************************************
+ * showHNLayerOffsetDialog
+ * 
+ * Displays a modal dialog for configuring house number layer offset.
+ * Provides directional shift buttons (↑↓←→), radio buttons for 1m/10m,
+ * and a reset button. Similar to WME GIS Layers LayerSettingsDialog.
+ *************************************************************************/
+function showHNLayerOffsetDialog() {
+  let dialog = document.getElementById('hn-offset-dialog');
+  
+  if (!dialog) {
+    dialog = document.createElement('div');
+    dialog.id = 'hn-offset-dialog';
+    dialog.style.cssText = 
+      'position: fixed; top: 15%; left: 50%; transform: translateX(-50%); ' +
+      'z-index: 9999; background: #73a9bd; padding: 0; ' +
+      'border-radius: 14px; box-shadow: 5px 6px 14px rgba(0,0,0,0.58); ' +
+      'border: 1px solid #50667b; font-family: Arial, sans-serif; ' +
+      'min-width: 250px;';
+    
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = 
+      'background: #4d6a88; color: #fff; padding: 8px 12px; ' +
+      'border-radius: 14px 14px 0 0; font-weight: bold; font-size: 14px; ' +
+      'display: flex; justify-content: space-between; align-items: center;';
+    header.innerHTML = '<span>House Number Layer Offset</span>';
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 
+      'background: none; border: none; color: #eaf6ff; font-size: 20px; ' +
+      'cursor: pointer; padding: 0; margin: 0;';
+    closeBtn.onclick = () => { dialog.style.display = 'none'; };
+    header.appendChild(closeBtn);
+    dialog.appendChild(header);
+    
+    // Body
+    const body = document.createElement('div');
+    body.style.cssText = 'padding: 12px; background: #d6e6f3;';
+    
+    // Shift amount radio buttons
+    const radioDiv = document.createElement('div');
+    radioDiv.style.cssText = 'margin-bottom: 10px; display: flex; gap: 12px;';
+    
+    const radio1m = document.createElement('input');
+    radio1m.type = 'radio';
+    radio1m.id = 'hn-shift-amt-1';
+    radio1m.name = 'hn-shift-amt';
+    radio1m.value = '1';
+    radio1m.checked = true;
+    radio1m.style.cssText = 'cursor: pointer; accent-color: #4d6a88;';
+    radioDiv.appendChild(radio1m);
+    
+    const label1m = document.createElement('label');
+    label1m.htmlFor = 'hn-shift-amt-1';
+    label1m.textContent = '1m';
+    label1m.style.cssText = 'cursor: pointer; font-weight: 600; font-size: 12px; color: #4d6a88;';
+    radioDiv.appendChild(label1m);
+    
+    const radio10m = document.createElement('input');
+    radio10m.type = 'radio';
+    radio10m.id = 'hn-shift-amt-10';
+    radio10m.name = 'hn-shift-amt';
+    radio10m.value = '10';
+    radio10m.style.cssText = 'cursor: pointer; accent-color: #4d6a88;';
+    radioDiv.appendChild(radio10m);
+    
+    const label10m = document.createElement('label');
+    label10m.htmlFor = 'hn-shift-amt-10';
+    label10m.textContent = '10m';
+    label10m.style.cssText = 'cursor: pointer; font-weight: 600; font-size: 12px; color: #4d6a88;';
+    radioDiv.appendChild(label10m);
+    
+    body.appendChild(radioDiv);
+    
+    // Button styling
+    const btnStyle = 'border: 1px solid #8ea0b7; color: #4d6a88; ' +
+                     'border-radius: 8px; cursor: pointer; font-weight: bold; ' +
+                     'font-size: 16px; width: 30px; height: 30px; padding: 0; ' +
+                     'box-shadow: 0 1.5px 4px #b6d0eb66; margin: 2px;';
+    
+    // Directional buttons
+    const table = document.createElement('table');
+    table.style.cssText = 'width: 100%; max-width: 120px; margin: 12px auto;';
+    
+    // Up button
+    const row1 = document.createElement('tr');
+    const cell1_1 = document.createElement('td');
+    cell1_1.style.cssText = 'text-align: center; height: 34px;';
+    const cell1_2 = document.createElement('td');
+    cell1_2.style.cssText = 'text-align: center; height: 34px;';
+    const upBtn = document.createElement('button');
+    upBtn.innerHTML = '<i class="fa fa-angle-up"></i>';
+    upBtn.style.cssText = btnStyle;
+    upBtn.title = 'Shift North';
+    upBtn.onclick = () => {
+      const amt = parseFloat(document.querySelector('input[name="hn-shift-amt"]:checked').value);
+      hnLayerOffset.y += amt;
+      updateOffsetDisplay();
+      refreshHNLayer();
+    WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the North`, false, false, 2000);
+    };
+    cell1_2.appendChild(upBtn);
+    const cell1_3 = document.createElement('td');
+    cell1_3.style.cssText = 'text-align: center; height: 34px;';
+    row1.appendChild(cell1_1);
+    row1.appendChild(cell1_2);
+    row1.appendChild(cell1_3);
+    table.appendChild(row1);
+    
+    // Left, Center, Right buttons
+    const row2 = document.createElement('tr');
+    const cell2_1 = document.createElement('td');
+    cell2_1.style.cssText = 'text-align: center;';
+    const leftBtn = document.createElement('button');
+    leftBtn.innerHTML = '<i class="fa fa-angle-left"></i>';
+    leftBtn.style.cssText = btnStyle;
+    leftBtn.title = 'Shift West';
+    leftBtn.onclick = () => {
+      const amt = parseFloat(document.querySelector('input[name="hn-shift-amt"]:checked').value);
+      hnLayerOffset.x -= amt;
+      updateOffsetDisplay();
+      refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the West`, false, false, 2000);
+    };
+    cell2_1.appendChild(leftBtn);
+    
+    const cell2_2 = document.createElement('td');
+    cell2_2.style.cssText = 'text-align: center;';
+    
+    const cell2_3 = document.createElement('td');
+    cell2_3.style.cssText = 'text-align: center;';
+    const rightBtn = document.createElement('button');
+    rightBtn.innerHTML = '<i class="fa fa-angle-right"></i>';
+    rightBtn.style.cssText = btnStyle;
+    rightBtn.title = 'Shift East';
+    rightBtn.onclick = () => {
+      const amt = parseFloat(document.querySelector('input[name="hn-shift-amt"]:checked').value);
+      hnLayerOffset.x += amt;
+      updateOffsetDisplay();
+      refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the East`, false, false, 2000);
+    };
+    cell2_3.appendChild(rightBtn);
+    
+    row2.appendChild(cell2_1);
+    row2.appendChild(cell2_2);
+    row2.appendChild(cell2_3);
+    table.appendChild(row2);
+    
+    // Down button
+    const row3 = document.createElement('tr');
+    const cell3_1 = document.createElement('td');
+    cell3_1.style.cssText = 'text-align: center; height: 34px;';
+    const cell3_2 = document.createElement('td');
+    cell3_2.style.cssText = 'text-align: center; height: 34px;';
+    const downBtn = document.createElement('button');
+    downBtn.innerHTML = '<i class="fa fa-angle-down"></i>';
+    downBtn.style.cssText = btnStyle;
+    downBtn.title = 'Shift South';
+    downBtn.onclick = () => {
+      const amt = parseFloat(document.querySelector('input[name="hn-shift-amt"]:checked').value);
+      hnLayerOffset.y -= amt;
+      updateOffsetDisplay();
+      refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, `The layer is shifted by <b>${amt} Metres</b> to the South`, false, false, 2000);
+    };
+    cell3_2.appendChild(downBtn);
+    const cell3_3 = document.createElement('td');
+    cell3_3.style.cssText = 'text-align: center; height: 34px;';
+    row3.appendChild(cell3_1);
+    row3.appendChild(cell3_2);
+    row3.appendChild(cell3_3);
+    table.appendChild(row3);
+    
+    body.appendChild(table);
+    
+    // Offset display
+    const offsetDisplay = document.createElement('div');
+    offsetDisplay.id = 'hn-offset-display';
+    offsetDisplay.style.cssText = 
+      'font-size: 12px; color: #4d6a88; background: #ffffff; border-radius: 6px; ' +
+      'margin: 10px 0; padding: 8px; text-align: center; font-weight: bold; ' +
+      'border: 1px solid #b0c4de;';
+    offsetDisplay.textContent = `Current offset: X = 0 m, Y = 0 m`;
+    body.appendChild(offsetDisplay);
+    
+    // Reset button
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset Offset';
+    resetBtn.style.cssText = 
+      'width: 100%; padding: 8px; background: #f44336; color: white; ' +
+      'border: none; border-radius: 5px; cursor: pointer; font-weight: bold; ' +
+      'font-size: 12px; margin-top: 8px;';
+    resetBtn.onmouseover = () => resetBtn.style.background = '#da190b';
+    resetBtn.onmouseout = () => resetBtn.style.background = '#f44336';
+    resetBtn.onclick = () => {
+      hnLayerOffset = { x: 0, y: 0 };
+      updateOffsetDisplay();
+      refreshHNLayer();
+      WazeToastr.Alerts.info(`${scriptName}`, 'Layer offset has been reset to <b>0 Metres</b>', false, false, 2000);
+    };
+    body.appendChild(resetBtn);
+    
+    dialog.appendChild(body);
+    document.body.appendChild(dialog);
+    
+    // Make draggable if jQuery UI is available
+    if (typeof jQuery !== 'undefined' && typeof jQuery.ui !== 'undefined') {
+      jQuery(dialog).draggable({
+        handle: header,
+        stop() {
+          dialog.style.height = '';
+        }
+      });
+    }
+  }
+  
+  dialog.style.display = 'block';
+  updateOffsetDisplay();
+}
+
+/*********************************************************************
+ * updateOffsetDisplay
+ * 
+ * Updates the offset display in the dialog to show current offset values.
+ *************************************************************************/
+function updateOffsetDisplay() {
+  const display = document.getElementById('hn-offset-display');
+  if (display) {
+    display.textContent = `Current offset: X = ${hnLayerOffset.x.toFixed(0)} m, Y = ${hnLayerOffset.y.toFixed(0)} m`;
+  }
+}
+
+/*********************************************************************
+ * refreshHNLayer
+ * 
+ * Refreshes the house number layer to apply new offsets.
+ *************************************************************************/
+function refreshHNLayer() {
+  log(`Refreshing HN layer with offset: X=${hnLayerOffset.x}m, Y=${hnLayerOffset.y}m`);
+  updateLayer();
+}
+
 function convertCoordinates(sourceCRS, targetCRS, coordinates) {
   const strippedCoords = stripZ(coordinates);
   if (Array.isArray(strippedCoords[0])) {
@@ -918,7 +1239,10 @@ function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
     const selectors = {};
     attributeTypes.forEach(attrType => {
       const label = document.createElement('label');
-      label.textContent = `${attrType.charAt(0).toUpperCase() + attrType.slice(1)} attribute:`;
+      const isRequired = attrType === 'number';
+      const optionalText = isRequired ? '' : ' (optional)';
+      const displayName = attrType === 'nepali' ? 'Nepali Name' : attrType.charAt(0).toUpperCase() + attrType.slice(1);
+      label.textContent = `${displayName} attribute${optionalText}:`;
       label.style.display = 'block';
       label.style.marginTop = '10px';
       modal.appendChild(label);
@@ -950,14 +1274,13 @@ function presentFeaturesAttributesSDK(features, nbFeatures, attributeTypes) {
     importBtn.style.cssText = 'flex: 1; padding: 10px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;';
     importBtn.onclick = () => {
       const selectedAttrs = {};
-      let allSelected = true;
       attributeTypes.forEach(attrType => {
         selectedAttrs[attrType] = selectors[attrType].value;
-        if (!selectedAttrs[attrType]) allSelected = false;
       });
 
-      if (!allSelected) {
-        WazeToastr.Alerts.warning('Import Warning', 'Please select all required attributes');
+      // Only 'number' attribute is required; 'street' is optional
+      if (!selectedAttrs['number']) {
+        WazeToastr.Alerts.warning('Import Warning', 'Please select the Number attribute (required)');
         return;
       }
 
@@ -1149,15 +1472,23 @@ async function handleFileImport(file) {
         const selectedAttrs = await presentFeaturesAttributesSDK(
           geoJSON.features,
           geoJSON.features.length,
-          ['street', 'number']
+          ['street', 'number', 'nepali']
         );
+        
+        // Store selected Nepali attribute for use in layer hover display
+        if (selectedAttrs.nepali) {
+          selectedNepaliAttribute = selectedAttrs.nepali;
+          log(`Selected Nepali attribute: ${selectedNepaliAttribute}`);
+        }
 
         // Convert to repository format
         const features = geoJSON.features.map((feature, idx) => {
-          const streetValue = feature.properties[selectedAttrs.street];
+          const streetValue = selectedAttrs.street ? feature.properties[selectedAttrs.street] : null;
           const numberValue = feature.properties[selectedAttrs.number];
+          const nepaliValue = selectedAttrs.nepali ? feature.properties[selectedAttrs.nepali] : null;
 
-          if (!streetValue || !numberValue) {
+          // Only number is required; street is optional
+          if (!numberValue) {
             return null;
           }
 
@@ -1172,13 +1503,16 @@ async function handleFileImport(file) {
           }
 
           // Nepal road name mapping: Marg -> Marga, Street -> St, normalize whitespace
-          let normalizedStreet = cleanupName(String(streetValue))
-            .replace(/\s+/g, ' ')
-            .trim()
-            .replace(/\bMarg\b/g, 'Marga')
-            .replace(/\bStreet$/i, 'St');
+          let normalizedStreet = '';
+          if (streetValue) {
+            normalizedStreet = cleanupName(String(streetValue))
+              .replace(/\s+/g, ' ')
+              .trim()
+              .replace(/\bMarg\b/g, 'Marga')
+              .replace(/\bStreet$/i, 'St');
+          }
 
-          return {
+          const featureObj = {
             type: 'Feature',
             id: `file-${filename}-${idx}`,
             geometry: point,
@@ -1189,6 +1523,13 @@ async function handleFileImport(file) {
               type: 'active'
             }
           };
+          
+          // Add Nepali attribute if selected
+          if (nepaliValue) {
+            featureObj.properties[selectedAttrs.nepali] = nepaliValue;
+          }
+          
+          return featureObj;
         }).filter(f => f !== null);
 
         if (features.length === 0) {
@@ -1212,18 +1553,24 @@ async function handleFileImport(file) {
         const maxLon = Math.max(...allCoords.map(c => c[0]));
         const minLat = Math.min(...allCoords.map(c => c[1]));
         const maxLat = Math.max(...allCoords.map(c => c[1]));
-        const featureBounds = [minLon, minLat, maxLon, maxLat];
-        
-        WazeToastr.Alerts.success('Import Success', `Loaded ${features.length} features from ${fileName}. Zooming to data location...`);
+
+                // Calculate center point
+        const centerLon = (minLon + maxLon) / 2;
+        const centerLat = (minLat + maxLat) / 2;
+
+       WazeToastr.Alerts.success('Import Success', `Loaded ${features.length} features from ${fileName}. Zooming to data location...`);
         
         // Zoom to the uploaded features using the correct SDK method
         try {
-          wmeSDK.Map.zoomToExtent({ bbox: featureBounds });
+            wmeSDK.Map.setMapCenter({ 
+            lonLat: { lon: centerLon, lat: centerLat }, 
+            zoomLevel: 19 
+            });
         } catch (e) {
           log('Error zooming to features: ' + e);
           WazeToastr.Alerts.warning('Zoom Notice', 'Please pan/zoom to the data location manually');
-        }
-        
+        }        
+
         resolve(features);
       } catch (error) {
         log('Error processing file: ' + error);
@@ -1299,7 +1646,7 @@ let Shortcut = function() {
         segmentId: nearestSegment.id
       });
       // Add to streetNumbers
-      let nameMatches = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0;
+      let nameMatches = feature.properties.street ? wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0 : false;
       if (nameMatches) {
         if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
           streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
@@ -1796,12 +2143,17 @@ function createFileUploadUI() {
 
     const title = document.createElement('div');
     title.textContent = 'Quick HN Importer for NP';
-    title.style.cssText = 'font-weight: bold; font-size: 16px; margin-bottom: 15px; border-bottom: 2px solid #4CAF50; padding-bottom: 5px;';
+    title.style.cssText = 'text-align: center; font-weight: bold; font-size: 16px;';
     container.appendChild(title);
+
+    const version = document.createElement('div');
+    version.innerHTML = 'Current Version ' + `${scriptVersion}`;
+    version.style.cssText = 'text-align: center; font-size: 0.9em; margin-bottom: 15px; border-bottom: 2px solid #4CAF50; padding-bottom: 5px;';
+    container.appendChild(version);
 
     const info = document.createElement('div');
     info.textContent = 'Import house numbers from various file formats';
-    info.style.cssText = 'font-size: 12px; margin-bottom: 15px; line-height: 1.4;';
+    info.style.cssText = 'text-align: center; font-size: 12px; margin-bottom: 15px; line-height: 1.4;';
     container.appendChild(info);
 
     const formatsLabel = document.createElement('div');
@@ -1845,6 +2197,15 @@ function createFileUploadUI() {
       }
     };
     container.appendChild(clearBtn);
+
+    // Offset Controls Section
+    const offsetBtn = document.createElement('button');
+    offsetBtn.textContent = '↕️ Configure Offset';
+    offsetBtn.style.cssText = 'width: 100%; padding: 10px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; margin-bottom: 15px;';
+    offsetBtn.onmouseover = () => offsetBtn.style.background = '#0b7dda';
+    offsetBtn.onmouseout = () => offsetBtn.style.background = '#2196F3';
+    offsetBtn.onclick = () => showHNLayerOffsetDialog();
+    container.appendChild(offsetBtn);
 
     // Separator
     const separator = document.createElement('div');
@@ -2122,11 +2483,42 @@ function init() {
   wmeSDK.Map.addLayer({
     layerName: LAYER_NAME,
     styleContext: {
-      fillColor: ({ feature }) => feature.properties && !streetNames.has(feature.properties.street.toLowerCase()) ? '#bb3333' : (selectedStreetNames.includes(feature.properties.street.toLowerCase()) ? '#99ee99' : '#fb9c4f'),
-      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
-      opacity: ({ feature }) => feature.properties && streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number)) ? 0.3 : 1,
-      cursor: ({ feature }) => feature.properties && streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number)) ? '' : 'pointer',
-      title: ({ feature }) => feature.properties && feature.properties.number && feature.properties.street ? feature.properties.street + ' - ' + feature.properties.number : '',
+      fillColor: ({ feature }) => feature.properties && feature.properties.street && !streetNames.has(feature.properties.street.toLowerCase()) ? '#bb3333' : (feature.properties.street && selectedStreetNames.includes(feature.properties.street.toLowerCase()) ? '#99ee99' : '#fb9c4f'),
+      radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(8 + feature.properties.number.length * 2, 10) : 10,
+      //radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(2 + feature.properties.number.length * 5, 12) : 12,
+      //radius: ({ feature }) => feature.properties && feature.properties.number ? Math.max(6 + feature.properties.number.length * 3, 10) : 10,
+      opacity: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? 0.3 : 1,
+      cursor: ({ feature }) => isHouseNumberAlreadyAdded(feature) ? '' : 'pointer',
+      title: ({ feature }) => {
+        if (!feature.properties || !feature.properties.number) return '';
+        let titleText = '';
+        
+        // Add street name if available
+        if (feature.properties.street) {
+          titleText += feature.properties.street + ' - ';
+        }
+        
+        // Add house number
+        titleText += feature.properties.number;
+        
+        // Add Nepali text if available (for uploaded data, use selected nepali attribute; for URL data, use rd_nanep)
+        let nepaliValue = null;
+        if (selectedNepaliAttribute && feature.properties[selectedNepaliAttribute]) {
+          nepaliValue = feature.properties[selectedNepaliAttribute];
+        } else if (feature.properties.rd_nanep) {
+          // For URL data from Metric House API
+          nepaliValue = feature.properties.rd_nanep;
+        }
+        
+        if (nepaliValue) {
+          const nepaliText = typeof preeti === 'function' ? preeti(nepaliValue) : nepaliValue;
+          if (nepaliText) {
+            titleText += '\n' + nepaliText;
+          }
+        }
+        
+        return titleText;
+      },
       number: ({ feature }) => feature.properties && feature.properties.number ? feature.properties.number : ''
     },
     styleRules: [
@@ -2137,11 +2529,12 @@ function init() {
           fontColor: '#111111',
           fontOpacity: '${opacity}',
           fontWeight: 'bold',
+          fontSize: '12px', // added font size for better visibility
           strokeColor: '#ffffff',
           strokeOpacity: '${opacity}',
           strokeWidth: 2,
           pointRadius: '${radius}',
-          graphicName: 'square',
+          graphicName: 'circle', // changed from square to circle for better aesthetics, can be adjusted back if needed
           label: '${number}',
           cursor: '${cursor}',
           title: '${title}'
@@ -2181,7 +2574,7 @@ function init() {
 
   let layerFeatureClickHandler = (clickEvent) => {
     let feature = Repository.getFeatureById(clickEvent.featureId);
-    if (streetNumbers.has(feature.properties.street.toLowerCase()) && streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number))) {
+    if (isHouseNumberAlreadyAdded(feature)) {
       return;
     }
     
@@ -2200,7 +2593,7 @@ function init() {
         segmentId: segment.id
       });
       // Add to streetNumbers
-      let nameMatches = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0;
+      let nameMatches = feature.properties.street ? wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0 : false;
       if (nameMatches) {
         if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
           streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
@@ -2217,7 +2610,8 @@ function init() {
       
       // Check if we found any segment at all
       if (!nearestSegment) {
-        WazeToastr.Alerts.error('No Segment Found', `Cannot add house number - no nearby segments found for "${feature.properties.street}"`);
+        const streetMsg = feature.properties.street ? ` for "${feature.properties.street}"` : '';
+        WazeToastr.Alerts.error('No Segment Found', `Cannot add house number - no nearby segments found${streetMsg}`);
         return;
       }
       
@@ -2240,21 +2634,69 @@ function init() {
         return;
       }
       
-      // Show confirmation dialog with callbacks
-      WazeToastr.Alerts.confirm(
+      // If no street name was provided during import (street attribute not selected),
+      // directly add to nearest segment without confirmation
+      if (!feature.properties.street || feature.properties.street.trim() === '') {
+        addHouseNumber(nearestSegment, feature);
+        return;
+      }
+      
+      // Check if this street pair is already cached from a previous decision
+      if (isCachedStreetPair(feature.properties.street, nearestStreetName)) {
+        log(`Using cached decision for "${feature.properties.street}" -> "${nearestStreetName}"`);
+        addHouseNumber(nearestSegment, feature);
+        return;
+      }
+      
+      // Show prompt dialog when street name was provided but doesn't match
+      log(`[PROMPT] Showing prompt for street mismatch:`);
+      log(`[PROMPT]   - Feature street: "${feature.properties.street}"`);
+      log(`[PROMPT]   - Nearest segment street: "${nearestStreetName}"`);
+      log(`[PROMPT]   - House number: "${feature.properties.number}"`);
+      
+      WazeToastr.Alerts.prompt(
         scriptName,
-        `Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?`,
-        function() {
-          // OK callback - user confirmed
-          addHouseNumber(nearestSegment, feature);
+        `Street name "${feature.properties.street}" could not be found. Do you want to add this number to "${nearestStreetName}"?\n\nEnter the number of minutes to remember this choice (0 = don't remember):`,
+        '0',
+        function(inputValue) {
+          try {
+            log(`[PROMPT] OK callback executed`);
+            log(`[PROMPT] Input value received: "${inputValue}" (type: ${typeof inputValue})`);
+            
+            // Convert string to number
+            const duration = Number(inputValue);
+            log(`[PROMPT] Converted to number: ${duration} (type: ${typeof duration})`);
+            log(`[PROMPT] isNaN: ${isNaN(duration)}`);
+            
+            if (!isNaN(duration) && duration >= 0) {
+              log(`[PROMPT] Duration validation passed: ${duration} >= 0`);
+              
+              if (duration > 0) {
+                log(`[PROMPT] Caching street pair for ${duration} minutes: "${feature.properties.street}" -> "${nearestStreetName}"`);
+                addToCacheStreetPair(feature.properties.street, nearestStreetName, duration);
+                log(`[PROMPT] Street pair cached successfully`);
+              } else {
+                log(`[PROMPT] Duration is 0 - not caching street pair`);
+              }
+              
+              log(`[PROMPT] Adding house number "${feature.properties.number}" to segment ${nearestSegment.id}`);
+              addHouseNumber(nearestSegment, feature);
+              log(`[PROMPT] House number added successfully`);
+            } else {
+              log(`[PROMPT] Duration validation FAILED: isNaN=${isNaN(duration)}, value=${duration}`);
+              WazeToastr.Alerts.warning(scriptName, 'Invalid input. Please enter a valid number of minutes.');
+            }
+          } catch (error) {
+            log(`[PROMPT] ERROR in OK callback: ${error.message}`);
+            log(`[PROMPT] Stack trace: ${error.stack}`);
+          }
         },
         function() {
-          // Cancel callback - user cancelled, do nothing
-          log('User cancelled house number addition');
+          log(`[PROMPT] Cancel clicked - User cancelled house number addition`);
         },
-        "Add to Segment",
-        "Cancel"
+        'text'  // Use 'text' input type for reliability and full control
       );
+      log(`[PROMPT] Prompt dialog created and shown`);
       return; // Exit early since we're handling async
     }
     
@@ -2392,26 +2834,71 @@ function updateLayer() {
   }
   
   Messages.show('loading');
-  const currentExtent = wmeSDK.Map.getMapExtent();
   
-  Repository.getExtentData(currentExtent).then((features) => {
+  // Calculate expanded extent to account for offset when fetching data
+  const currentExtent = wmeSDK.Map.getMapExtent();
+  let expandedExtent = currentExtent;
+  
+  if (hnLayerOffset.x !== 0 || hnLayerOffset.y !== 0) {
+    // Expand the extent to cover the offset area
+    // Convert offset from meters to degrees (approximate)
+    const metersPerDegree = 111320; // at equator
+    const offsetLonDegrees = Math.abs(hnLayerOffset.x) / metersPerDegree;
+    const offsetLatDegrees = Math.abs(hnLayerOffset.y) / metersPerDegree;
+    
+    expandedExtent = [
+      currentExtent[0] - offsetLonDegrees,
+      currentExtent[1] - offsetLatDegrees,
+      currentExtent[2] + offsetLonDegrees,
+      currentExtent[3] + offsetLatDegrees
+    ];
+    
+    if (debug) {
+      log(`Offset detected: X=${hnLayerOffset.x}m, Y=${hnLayerOffset.y}m`);
+      log(`Expanded extent for data fetch to include offset areas`);
+    }
+  }
+  
+  Repository.getExtentData(expandedExtent).then((features) => {
     // Always clear the layer first
     wmeSDK.Map.removeAllFeaturesFromLayer({
       layerName: LAYER_NAME
     });
     
+    // Apply offset to features before displaying
+    const offsetFeatures = applyHNLayerOffset(features);
+    
+    // Update the directory with offset features so that when clicked on the map,
+    // the feature retrieved will have the correct offset geometry
+    const directory = Repository.getDirectory();
+    offsetFeatures.forEach(feature => {
+      directory.set(feature.id, feature);
+    });
+    
+    // Filter to only show features within the current (non-expanded) extent after applying offset
+    const visibleFeatures = offsetFeatures.filter(feature => {
+      const [lon, lat] = feature.geometry.coordinates;
+      return lon >= currentExtent[0] && lon <= currentExtent[2] && 
+             lat >= currentExtent[1] && lat <= currentExtent[3];
+    });
+    
     // Then add new features if any exist
-    if (features && features.length > 0) {
+    if (visibleFeatures && visibleFeatures.length > 0) {
       wmeSDK.Map.addFeaturesToLayer({
         layerName: LAYER_NAME,
-        features: features
+        features: visibleFeatures
       });
     }
     Messages.hide('loading');
     Messages.hide('autocomplete');
     // Pre-fill autocompleteFeatures
     if (selectedStreetNames.length > 0) {
-      autocompleteFeatures = features.filter(feature => selectedStreetNames.includes(feature.properties.street.toLowerCase()) && (!streetNumbers.has(feature.properties.street.toLowerCase()) || (streetNumbers.has(feature.properties.street.toLowerCase()) && !streetNumbers.get(feature.properties.street.toLowerCase()).has(simplifyNumber(feature.properties.number)))) && turf.booleanContains(turf.bboxPolygon(wmeSDK.Map.getMapExtent()), feature));
+      autocompleteFeatures = visibleFeatures.filter(feature => 
+        feature.properties.street && 
+        selectedStreetNames.includes(feature.properties.street.toLowerCase()) && 
+        !isHouseNumberAlreadyAdded(feature) && 
+        turf.booleanContains(turf.bboxPolygon(currentExtent), feature)
+      );
       if (autocompleteFeatures.length > 0) {
         let params = new Map([
           ['.qhni-number', autocompleteFeatures.length],
@@ -2433,7 +2920,10 @@ function updateLayer() {
 }
 
 function findNearestSegment(feature, matchName) {
-  let streetIds = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).map(street => street.id);
+  let streetIds = [];
+  if (feature.properties.street) {
+    streetIds = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).map(street => street.id);
+  }
   if (!matchName || streetIds.length > 0) {
     let nearestSegment = wmeSDK.DataModel.Segments.getAll()
       .filter(segment => !matchName || streetIds.includes(segment.primaryStreetId) || streetIds.filter(streetId => segment.alternateStreetIds?.includes(streetId)).length > 0)
@@ -2446,8 +2936,38 @@ function findNearestSegment(feature, matchName) {
   return null;
 }
 
+/**
+ * Check if a house number is already added to the map
+ * @param {Object} feature - The feature to check
+ * @returns {boolean} - True if house number is already added
+ */
+function isHouseNumberAlreadyAdded(feature) {
+  if (!feature.properties || !feature.properties.number) {
+    return false;
+  }
+  
+  const simplifiedNumber = simplifyNumber(feature.properties.number);
+  
+  // If feature has a street name (attribute was selected during import),
+  // only check if this specific street+number combo exists
+  if (feature.properties.street && feature.properties.street.trim() !== '') {
+    const streetLower = feature.properties.street.toLowerCase();
+    return streetNumbers.has(streetLower) && streetNumbers.get(streetLower).has(simplifiedNumber);
+  }
+  
+  // If no street name (attribute not selected during import),
+  // check if the number exists in ANY street
+  for (const [street, numbers] of streetNumbers.entries()) {
+    if (numbers.has(simplifiedNumber)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 function simplifyNumber(number) {
-  return number.replace(/[\/-]/, "_");
+  return number.replace(/[\/-]/, "_").toLowerCase();
 }
 
 function cleanupName(name) {
@@ -2547,6 +3067,27 @@ scriptupdatemonitor();
 })();
   
   /* Changelog:
+ Version 1.2.7.4: - 2026-02-17
+- Added display of version number in script tab<br>
+- Minor bug fixes<br>
+  Version 1.2.7.2 - 2026-02-15
+  - Adjusted the size of the circle appearing on the map based on the house number length
+  Version 1.2.7.1 - 2026-02-15
+  - Fixed an issue where the house number were added to the original location than the shifted location when the offset was applied.<br>
+  Version 1.2.7 - 2026-02-15
+  - Nepali text display added to house number hover tooltips.<br>
+- For uploaded files: Select a "Nepali Name" attribute during import to display Nepali text on hover (optional).<br>
+- For Metric House API data: Automatically displays Nepali street names from the API when hovering over features.<br>
+- Nepali text is automatically converted from Preeti font to Unicode for proper display.<br>
+- Hover format: Street Name - House Number followed by Nepali text on a new line.<br>
+- House number layer can be shifted based on the given offset input. 
+  Version 1.2.6.2 - 2026-02-14
+  <strong>New in v1.2.6.2:</strong><br>
+- Street name attribute is now optional when importing house number data.<br>
+- Confirmation dialog for adding house numbers only appears if both street name and house number are selected.<br>
+- House number validation improved: if street name is not selected, duplicate detection works across all streets.<br>
+- Already-added house numbers are shown transparent, even when only the number matches.<br>
+- Displayed house number layer boxes are now more compact.<br>
   Version 1.2.6 - 2026-02-14
   - Fixed 3D coordinate handling: Added stripZ() and stripZFromGeoJSON() functions to automatically remove elevation/Z coordinates from all geometries after file parsing. This resolves "Only 2D points are supported" errors when importing KML/KMZ files containing 3D coordinates (longitude, latitude, elevation). The fix ensures compatibility with turf.js operations that only support 2D points.
   - Enhanced attribute selection dialog: Improved UI to display sample feature data (first 5 features with all their properties) before import. Users can now see actual data values in a scrollable, formatted view, making it much easier to identify which attributes contain street names and house numbers, especially with unfamiliar data formats or non-English languages.
