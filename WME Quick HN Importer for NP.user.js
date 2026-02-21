@@ -2151,7 +2151,7 @@ function createFileUploadUI() {
         
    // Information about Name matchmaking
   const infoNames = document.createElement('div');
-  infoNames.innerHTML = 'These below are matched and replaced accordingly:<br><b>Marg <i class="fa fa-arrow-right"></i> Marga</b><br><b>Street <i class="fa fa-arrow-right"></i> St</b><br><b>Road <i class="fa fa-arrow-right"></i> Rd</b><br><b>Saraswoti <i class="fa fa-arrow-right"></i> Saraswati</b><br><br><b>Note:</b><br>1. For Nepali text, ensure the correct attribute is selected in settings.<br>2. The Tooltip displays the original street name from the file or URL for reference and should not be used to naming the street in WME if the name does not match existing segments, always verify with local community leadership before naming new streets in WME.';
+  infoNames.innerHTML = 'These below are matched and replaced accordingly:<br><b>Marg <i class="fa fa-arrow-right"></i> Marga</b><br><b>Street <i class="fa fa-arrow-right"></i> St</b><br><b>Road <i class="fa fa-arrow-right"></i> Rd</b><br><b>Saraswoti <i class="fa fa-arrow-right"></i> Saraswati</b><br><br><b>Note:</b><br>1. For Nepali text, ensure the correct attribute is selected in settings.<br>2. The Tooltip displays the original street name from the file or URL for reference and should not be used to naming the street in WME if the name does not match existing segments.<br>3. Always verify with local community leadership before adding or modifying street names or adding new streets in WME.';
   infoNames.style.cssText = 'font-size: 12px; color: inherit; padding: 5px; background: inherit; border-radius: 4px;';
     container.appendChild(infoNames);
     
@@ -2237,10 +2237,9 @@ function init() {
         if (!feature.properties || !feature.properties.number) return '';
         let titleText = '';
         
-        // Add street name if available - use original (non-normalized) name for tooltip
-        const displayStreetName = feature.properties.streetOriginal || feature.properties.street;
-        if (displayStreetName) {
-          titleText += displayStreetName + ' - ';
+        // Add street name if available
+        if (feature.properties.street) {
+          titleText += feature.properties.street + ' - ';
         }
         
         // Add house number
@@ -2260,6 +2259,11 @@ function init() {
           if (nepaliText) {
             titleText += '\n' + nepaliText;
           }
+        }
+        
+        // Add original street name if available
+        if (feature.properties.streetOriginal) {
+          titleText += '\n' + feature.properties.streetOriginal;
         }
         
         return titleText;
