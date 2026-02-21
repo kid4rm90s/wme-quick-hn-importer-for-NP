@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Quick HN Importer for NP
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.2.7.5
+// @version      1.2.7.6
 // @description  Quickly add house numbers based on open data sources of house numbers. Supports loading from URLs and file formats: GeoJSON, KML, KMZ, GML, GPX, WKT, ZIP (Shapefile)
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,8 +29,9 @@
 // Original Author: Glodenox (https://greasyfork.org/en/scripts/421430-wme-quick-hn-importer) and JS55CT for WME GEOFILE (https://greasyfork.org/en/scripts/540764-wme-geofile) script. Modified by kid4rm90s for Quick HN Importer for Nepal with additional features.
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>✨New in v1.2.7.5:</strong><br>
-- 🧰Temp fix for layer opacity not changing when undo is done until SDK fully supports it.<br>
+  const updateMessage = `<strong>✨New in v1.2.7.6:</strong><br>
+- 🧰Now it matches Road with Rd and Saraswoti with Saraswati.<br>
+- 🧹Improved street name normalization for better matching with Waze data.<br>
 - Minor bug fixes<br>
 <br>
 <strong>If you like this script, please consider rating it on GreasyFork!</strong>`;
@@ -648,17 +649,14 @@ async function fetchMetricHouseData() {
           
           let center = turf.center(feature);
           // Nepal road name mapping: Marg -> Marga, Street -> St, normalize whitespace
-          let normalizedStreet = cleanupName(street)
-            .replace(/\s+/g, ' ')
-            .trim()
-            .replace(/\bMarg\b/g, 'Marga')
-            .replace(/\bStreet$/i, 'St');
+          let normalizedStreet = normalizeNepalStreetName(street);
           features.push({
             type: "Feature",
             id: `url-np-${props.gid}`,
             geometry: center.geometry,
             properties: {
               street: normalizedStreet,
+              streetOriginal: street, // Store original name for tooltip display
               number: number,
               municipality: props.tole_ne_en || `Ward ${wardNo}`,
               rd_nanep: props.rd_nanep || '', // Store Nepali text for hover display
@@ -1505,11 +1503,7 @@ async function handleFileImport(file) {
           // Nepal road name mapping: Marg -> Marga, Street -> St, normalize whitespace
           let normalizedStreet = '';
           if (streetValue) {
-            normalizedStreet = cleanupName(String(streetValue))
-              .replace(/\s+/g, ' ')
-              .trim()
-              .replace(/\bMarg\b/g, 'Marga')
-              .replace(/\bStreet$/i, 'St');
+            normalizedStreet = normalizeNepalStreetName(String(streetValue));
           }
 
           const featureObj = {
@@ -1518,6 +1512,7 @@ async function handleFileImport(file) {
             geometry: point,
             properties: {
               street: normalizedStreet,
+              streetOriginal: streetValue ? String(streetValue) : '', // Store original name for tooltip display
               number: String(numberValue),
               municipality: filename,
               type: 'active'
@@ -1648,10 +1643,11 @@ let Shortcut = function() {
       // Add to streetNumbers
       let nameMatches = feature.properties.street ? wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0 : false;
       if (nameMatches) {
-        if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
-          streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
+        const normalizedStreet = normalizeNepalStreetName(feature.properties.street).toLowerCase();
+        if (!streetNumbers.has(normalizedStreet)) {
+          streetNumbers.set(normalizedStreet, new Set());
         }
-        streetNumbers.get(feature.properties.street.toLowerCase()).add(simplifyNumber(feature.properties.number));
+        streetNumbers.get(normalizedStreet).add(simplifyNumber(feature.properties.number));
       }
     });
     Messages.hide('autocomplete');
@@ -1865,270 +1861,6 @@ let Repository = function() {
     }
   };
 }();
-/********************************
-// Vlaanderen (Belgium):
-Repository.addSource((left, bottom, right, top) => {
-  let requestedPoly = turf.bboxPolygon([left, bottom, right, top]);
-  let regionPoly = turf.polygon([[[4.777969,51.518210],[4.641333,51.422010],[4.537689,51.488676],[4.377120,51.453982],[4.382282,51.381726],[4.217576,51.373885],[3.965949,51.226031],[3.590019,51.305952],[3.414280,51.262159],[3.365430,51.370106],[3.186308,51.362487],[2.545706,51.088757],[2.574734,50.996934],[2.579035,50.918657],[2.606847,50.813426],[2.846267,50.697874],[2.963540,50.773141],[3.120955,50.770274],[3.418007,50.690563],[3.806240,50.747335],[3.920502,50.686118],[4.287230,50.688986],[4.798471,50.772137],[5.135715,50.690628],[5.508128,50.720813],[5.628842,50.773284],[5.821811,50.707623],[5.919873,50.709917],[5.907257,50.769270],[5.694503,50.814860],[5.653214,50.866185],[5.737226,50.906614],[5.866541,51.154922],[5.491785,51.305742],[5.343832,51.276209],[5.071179,51.393485],[5.136526,51.463444],[5.016099,51.491257],[5.002909,51.445380],[4.860834,51.471759],[4.777969,51.518210]]]);
-  if (turf.booleanDisjoint(regionPoly, requestedPoly)) {
-    return new Promise((resolve, reject) => resolve([]));
-  }
-  return httpRequest({
-    url: `https://geo.api.vlaanderen.be/Adressenregister/ogc/features/v1/collections/Adres/items?f=application/json&bbox=${left},${bottom},${right},${top}`
-  }, (response) => {
-    let features = [];
-    let TYPE_MAPPING = new Map([
-      ['InGebruik', 'active'],
-      ['Voorgesteld', 'planned']
-    ]);
-    response.response.features?.forEach((feature) => {
-      if (!TYPE_MAPPING.has(feature.properties.AdresStatus)) {
-        return;
-      }
-      features.push({
-        type: "Feature",
-        id: feature.properties.Id,
-        geometry: feature.geometry,
-        properties: {
-          street: feature.properties.Straatnaam,
-          number: feature.properties.Huisnummer,
-          municipality: feature.properties.Gemeentenaam,
-          type: TYPE_MAPPING.get(feature.properties.AdresStatus)
-        }
-      });
-    });
-    return features;
-  });
-});
-// Brussels (Belgium):
-Repository.addSource((left, bottom, right, top) => {
-  let requestedPoly = turf.bboxPolygon([left, bottom, right, top]);
-  let regionPoly = turf.polygon([[[4.410507,50.916487],[4.444648,50.883599],[4.420867,50.867712],[4.466045,50.851056],[4.476732,50.820404],[4.452249,50.806449],[4.485805,50.792925],[4.383965,50.761429],[4.331210,50.775508],[4.293584,50.804971],[4.238630,50.814280],[4.253596,50.836364],[4.279553,50.840647],[4.278150,50.866039],[4.295571,50.894146],[4.410507,50.916487]]]);
-  if (turf.booleanDisjoint(regionPoly, requestedPoly)) {
-    return new Promise((resolve, reject) => resolve([]));
-  }
-  return httpRequest({
-    url: `https://geoservices-urbis.irisnet.be/geoserver/urbisvector/wfs?service=wfs&version=2.0.0&request=GetFeature&typeNames=urbisvector:AddressNumbers&outputFormat=application/json&srsName=EPSG:4326&bbox=${left},${bottom},${right},${top},EPSG:4326`
-  }, (response) => {
-    let features = [];
-    response.response.features?.forEach((feature) => {
-      let streetName = cleanupName(feature.properties.STRNAMEFRE || feature.properties.STRNAMEDUT);
-      features.push({
-        type: "Feature",
-        id: feature.properties.INSPIRE_ID,
-        geometry: feature.geometry,
-        properties: {
-          street: streetName,
-          number: feature.properties.POLICENUM,
-          municipality: feature.properties.MUNNAMEFRE || feature.properties.MUNNAMEDUT,
-          type: 'active'
-        }
-      });
-    });
-    return features;
-  });
-});
-// Wallonie (Belgium):
-Repository.addSource((left, bottom, right, top) => {
-  let requestedPoly = turf.bboxPolygon([left, bottom, right, top]);
-  let regionPoly = turf.polygon([[[5.709641,50.819673],[5.724607,50.758174],[6.025802,50.767641],[6.288645,50.632562],[6.197057,50.530405],[6.351289,50.488288],[6.420534,50.325417],[6.137793,50.129849],[5.999611,50.157914],[5.750798,49.830795],[5.921974,49.705737],[5.898589,49.553056],[5.472410,49.496955],[4.851679,49.793482],[4.781738,49.957938],[4.877586,50.153709],[4.702101,50.095553],[4.692983,49.995491],[4.454353,49.925431],[4.121356,49.959142],[4.147547,50.240543],[4.016592,50.344523],[3.673306,50.295549],[3.615312,50.482215],[3.286056,50.485191],[3.237416,50.688299],[3.055951,50.773557],[2.896000,50.685336],[2.794978,50.732724],[2.982056,50.818491],[3.175681,50.768824],[3.758521,50.780406],[4.249504,50.720289],[4.761160,50.831490],[5.137185,50.719105],[5.709641,50.819673]]]);
-  if (turf.booleanDisjoint(regionPoly, requestedPoly)) {
-    return new Promise((resolve, reject) => resolve([]));
-  }
-  return httpRequest({
-    url: `https://geoservices.wallonie.be/arcgis/rest/services/DONNEES_BASE/ICAR_ADR_PT/MapServer/1/query?outfields=ADR_ID,ADR_NUMERO,RUE_NM,COM_NM,ADR_FIN&geometryType=esriGeometryEnvelope&inSR=4326&outSR=4326&f=json&geometry=${left},${bottom},${right},${top}`
-  }, (response) => {
-    let features = [];
-    response.response.features?.forEach((feature) => {
-      if (feature.attributes.ADR_FIN != null) {
-        return;
-      }
-      let streetName = cleanupName(feature.attributes.RUE_NM.replace(/ \([A-Z]{2}\)$/, ""));
-      features.push(turf.point([ feature.geometry.x, feature.geometry.y ], {
-        street: streetName,
-        number: feature.attributes.ADR_NUMERO,
-        municipality: feature.attributes.COM_NM,
-        type: 'active'
-      }, {
-        id: feature.attributes.ADR_ID
-      }));
-    });
-    return features;
-  });
-});
-// The Netherlands:
-Repository.addSource((left, bottom, right, top) => {
-  let requestedPoly = turf.bboxPolygon([left, bottom, right, top]);
-  let regionPoly = turf.polygon([[[4.276162,51.358135],[3.923522,51.188432],[3.644777,51.247607],[3.368838,51.233552],[3.263139,51.540013],[4.614772,53.286735],[6.399488,53.739490],[7.194590,53.245021],[7.192821,52.998006],[7.052388,52.600208],[6.737035,52.634695],[6.714814,52.461553],[7.071095,52.449966],[7.026320,52.230637],[6.725938,52.035871],[6.869987,51.957545],[6.362073,51.806845],[6.251697,51.852513],[5.946761,51.815520],[6.252633,51.468980],[6.147252,51.152253],[5.960792,51.034575],[6.085199,50.897317],[5.994910,50.749926],[5.681112,50.746043],[5.595992,50.835330],[5.802712,51.128007],[5.435105,51.254632],[5.129234,51.272191],[5.027527,51.476807],[4.910325,51.391902],[4.762117,51.413374],[4.826092,51.460555],[4.764184,51.496237],[4.630135,51.418206],[4.447338,51.433422],[4.401504,51.325998],[4.276162,51.358135]]]);
-  if (turf.booleanDisjoint(regionPoly, requestedPoly)) {
-    return new Promise((resolve, reject) => resolve([]));
-  }
-  let transformedPoly = turf.toMercator(requestedPoly);
-  let bbox = turf.bbox(transformedPoly, { recompute: true });
-  let parseData = async function(response) {
-    let features = [];
-    response.response.features?.forEach((feature) => {
-      features.push({
-        type: "Feature",
-        id: feature.properties.identificatie,
-        geometry: feature.geometry,
-        properties: {
-          street: cleanupName(feature.properties.openbare_ruimte),
-          number: feature.properties.huisnummer + feature.properties.huisletter + (feature.properties.huisletter == "" && feature.properties.toevoeging.length > 0 && !isNaN(feature.properties.toevoeging.charAt(0)) ? '-' : '') + feature.properties.toevoeging,
-          municipality: feature.properties.woonplaats,
-          type: 'active'
-        }
-      });
-    });
-    if (response.response.features.length > 0) {
-      let currentURL = URL.parse(response.finalUrl);
-      let moreFeatures = await retrieveData(Number(currentURL.searchParams.get("startIndex")) + 1000);
-      features = features.concat(moreFeatures);
-    }
-    return features;
-  };
-  let retrieveData = (startIndex) => {
-    return httpRequest({
-      url: `https://service.pdok.nl/lv/bag/wfs/v2_0?service=wfs&version=2.0.0&request=GetFeature&typeNames=bag:verblijfsobject&outputFormat=application/json&srsName=EPSG:4326&bbox=${bbox.join(",")},EPSG:3857&count=1000&startIndex=${startIndex}`,
-      context: startIndex
-    }, parseData);
-  };
-  return retrieveData(0);
-});
-// Slovenia:
-Repository.addSource((left, bottom, right, top) => {
-  let requestedPoly = turf.bboxPolygon([left, bottom, right, top]);
-  let regionPoly = turf.polygon([[[13.559654,45.463437],[13.568005,45.566997],[13.894686,45.631841],[13.546291,45.830907],[13.603082,45.954511],[13.442731,45.984577],[13.621456,46.168312],[13.410116,46.207981],[13.365897,46.300267],[13.731697,46.545804],[14.548483,46.418860],[14.850390,46.601135],[15.061953,46.649556],[15.458807,46.651034],[15.635975,46.717562],[15.934848,46.719517],[15.979947,46.843121],[16.278934,46.878198],[16.325338,46.839441],[16.526141,46.500705],[16.263947,46.515921],[16.285615,46.362069],[16.103550,46.370421],[16.048430,46.291915],[15.620828,46.174993],[15.697987,46.036209],[15.679289,45.820885],[15.286764,45.730688],[15.373769,45.640212],[15.268555,45.601662],[15.371951,45.455085],[15.144787,45.418338],[14.932656,45.506865],[14.820745,45.436712],[14.541802,45.627128],[14.423209,45.465107],[14.000618,45.471789],[13.889001,45.423636],[13.559654,45.463437]]]);
-  if (turf.booleanDisjoint(regionPoly, requestedPoly)) {
-    return new Promise((resolve, reject) => resolve([]));
-  }
-  let [slovLeft, slovBottom] = proj4("EPSG:4326", "EPSG:3794", [left, bottom]),
-      [slovRight, slovTop] = proj4("EPSG:4326", "EPSG:3794", [right, top]);
-  let extractComponent = (feature, componentName) => feature.properties.component.find(component => component["@href"].includes(componentName))["@title"];
-  return httpRequest({
-    url: `https://storitve.eprostor.gov.si/ows-ins-wfs/ows?service=wfs&version=2.0.0&request=GetFeature&typeNames=ad:Address&outputFormat=application/json&srsName=EPSG:3794&bbox=${slovLeft},${slovBottom},${slovRight},${slovTop},EPSG:3794`
-  }, (response) => {
-    let features = [];
-    response.response.features?.forEach((feature) => {
-      features.push(turf.point(proj4("EPSG:3794", "EPSG:4326", feature.properties.position.geometry.coordinates), {
-        street: extractComponent(feature, "ad:ThoroughfareName"),
-        number: feature.properties.locator.designator.designator,
-        municipality: extractComponent(feature, "ad:AddressAreaName"),
-        type: 'active'
-      }, {
-        id: feature.id,
-      }));
-    });
-    return features;
-  });
-}); 
-*********************************/
-
-/*
-
-// Nepal (Lalitpur Metropolitan City):
-Repository.addSource((left, bottom, right, top) => {
-  // Check if URL source is enabled
-  const urlSourceEnabled = localStorage.getItem('qhni-enable-url-source') === 'true';
-  log(`[URL-Repository] addSource called for extent [${left}, ${bottom}, ${right}, ${top}]`);
-  log(`[URL-Repository] URL source enabled: ${urlSourceEnabled}`);
-  
-  if (!urlSourceEnabled) {
-    log('[URL-Repository] URL source disabled, returning empty array');
-    return new Promise((resolve) => resolve([]));
-  }
-  
-  // Lalipur Municipality polygon
-  let requestedPoly = turf.bboxPolygon([left, bottom, right, top]);
-  let regionPoly = turf.polygon([[
-  [85.29377337876386, 27.603309874523035],
-  [85.28907174008309, 27.610757759711703],
-  [85.28112722544194, 27.644637619503936],
-  [85.2911097667452, 27.673688570775262],
-  [85.301321831427, 27.692360556657775],
-  [85.30740589291473, 27.694362605619077],
-  [85.32757155676471, 27.68690327105091],
-  [85.34449915180973, 27.672768378131995],
-  [85.35597653295329, 27.63372772622652],
-  [85.33227244070862, 27.616131609219202],
-  [85.29377337876386, 27.603309874523035]
-  ]]);
-  
-  const isDisjoint = turf.booleanDisjoint(regionPoly, requestedPoly);
-  log(`[URL-Repository] Region intersection check: ${isDisjoint ? 'DISJOINT (outside LMC)' : 'INTERSECTS (inside LMC)'}`);
-  
-  if (isDisjoint) {
-    log('[URL-Repository] Requested extent outside Lalitpur region, returning empty array');
-    return Promise.resolve([]);
-  }
-
-  let wardNumbers = Array.from({ length: 29 }, (_, index) => index + 1);
-  log(`[URL-Repository] Fetching data for ${wardNumbers.length} wards within extent`);
-  
-  return Promise.allSettled(wardNumbers.map((wardNo) => {
-    return httpRequest({
-      url: `https://geonep.com.np/LMC/ajax/x_building.php?ward_no=${wardNo}`
-    }, (response) => {
-      let features = [];
-      const totalRawFeatures = response.response.features?.length || 0;
-      
-      response.response.features?.forEach((feature) => {
-        let props = feature.properties || {};
-        let number = props.metric_num;
-        let street = props.rd_naeng;
-        if (!number || !street) {
-          return;
-        }
-        if (!turf.booleanIntersects(feature, requestedPoly)) {
-          return;
-        }
-        let center = turf.center(feature);
-        // Nepal road name mapping: Marg -> Marga, Street -> St, normalize whitespace
-        let normalizedStreet = cleanupName(street)
-          .replace(/\s+/g, ' ')
-          .trim()
-          .replace(/\bMarg\b/g, 'Marga')
-          .replace(/\bStreet$/i, 'St');
-        features.push({
-          type: "Feature",
-          id: `np-${props.gid}`,
-          geometry: center.geometry,
-          properties: {
-            street: normalizedStreet,
-            number: number,
-            municipality: props.tole_ne_en || `Ward ${wardNo}`,
-            type: 'active'
-          }
-        });
-      });
-      
-      log(`[URL-Repository] Ward ${wardNo}: ${features.length}/${totalRawFeatures} features in extent`);
-      return features;
-    });
-  })).then((results) => {
-    // Filter successful requests and log failures
-    let successCount = 0;
-    let failureCount = 0;
-    
-    const featureGroups = results
-      .filter((result, index) => {
-        if (result.status === 'rejected') {
-          failureCount++;
-          log(`[URL-Repository] Ward ${index + 1} request FAILED: ${result.reason}`);
-          return false;
-        }
-        successCount++;
-        return true;
-      })
-      .map(result => result.value);
-    
-    const totalFeatures = featureGroups.reduce((sum, group) => sum + group.length, 0);
-    log(`[URL-Repository] Completed: ${successCount} wards succeeded, ${failureCount} failed, ${totalFeatures} total features`);
-    
-    return [].concat(...featureGroups);
-  });
-});
-*/
   
 // Create file upload UI in sidebar
 function createFileUploadUI() {
@@ -2412,6 +2144,17 @@ function createFileUploadUI() {
       fileInput.value = '';
     });
 
+    // Separator
+    const separatorInfo = document.createElement('div');
+    separatorInfo.style.cssText = 'border-top: 1px solid #ddd; margin: 15px 0;';
+    container.appendChild(separatorInfo);
+        
+   // Information about Name matchmaking
+  const infoNames = document.createElement('div');
+  infoNames.innerHTML = 'These below are matched and replaced accordingly:<br><b>Marg <i class="fa fa-arrow-right"></i> Marga</b><br><b>Street <i class="fa fa-arrow-right"></i> St</b><br><b>Road <i class="fa fa-arrow-right"></i> Rd</b><br><b>Saraswoti <i class="fa fa-arrow-right"></i> Saraswati</b><br><br><b>Note:</b><br>1. For Nepali text, ensure the correct attribute is selected in settings.<br>2. The Tooltip displays the original street name from the file or URL for reference and should not be used to naming the street in WME if the name does not match existing segments, always verify with local community leadership before naming new streets in WME.';
+  infoNames.style.cssText = 'font-size: 12px; color: inherit; padding: 5px; background: inherit; border-radius: 4px;';
+    container.appendChild(infoNames);
+    
     tabPane.appendChild(container);
   }).catch(error => {
     log('Error registering sidebar tab: ' + error);
@@ -2442,6 +2185,7 @@ async function clearUploadedData() {
       status.style.borderLeftColor = '#ddd';
     }
   }
+
   updateLayer();
   WazeToastr.Alerts.info('Cleared', 'Uploaded file data cleared');
 }
@@ -2493,9 +2237,10 @@ function init() {
         if (!feature.properties || !feature.properties.number) return '';
         let titleText = '';
         
-        // Add street name if available
-        if (feature.properties.street) {
-          titleText += feature.properties.street + ' - ';
+        // Add street name if available - use original (non-normalized) name for tooltip
+        const displayStreetName = feature.properties.streetOriginal || feature.properties.street;
+        if (displayStreetName) {
+          titleText += displayStreetName + ' - ';
         }
         
         // Add house number
@@ -2595,10 +2340,11 @@ function init() {
       // Add to streetNumbers
       let nameMatches = feature.properties.street ? wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).length > 0 : false;
       if (nameMatches) {
-        if (!streetNumbers.has(feature.properties.street.toLowerCase())) {
-          streetNumbers.set(feature.properties.street.toLowerCase(), new Set());
+        const normalizedStreet = normalizeNepalStreetName(feature.properties.street).toLowerCase();
+        if (!streetNumbers.has(normalizedStreet)) {
+          streetNumbers.set(normalizedStreet, new Set());
         }
-        streetNumbers.get(feature.properties.street.toLowerCase()).add(simplifyNumber(feature.properties.number));
+        streetNumbers.get(normalizedStreet).add(simplifyNumber(feature.properties.number));
       }
       wmeSDK.Map.redrawLayer({ layerName: LAYER_NAME });
     };
@@ -2757,10 +2503,11 @@ function init() {
           return;
         }
         [ segment.primaryStreetId, ... segment.alternateStreetIds ].map(streetId => wmeSDK.DataModel.Streets.getById({ streetId: streetId }).name).forEach(streetName => {
-          if (!streetNumbers.has(streetName.toLowerCase())) {
-            streetNumbers.set(streetName.toLowerCase(), new Set());
+          const normalizedStreet = normalizeNepalStreetName(streetName).toLowerCase();
+          if (!streetNumbers.has(normalizedStreet)) {
+            streetNumbers.set(normalizedStreet, new Set());
           }
-          streetNumbers.get(streetName.toLowerCase()).add(simplifyNumber(houseNumber));
+          streetNumbers.get(normalizedStreet).add(simplifyNumber(houseNumber));
         });
       });
     } else if (eventData.dataModelName == "streets") {
@@ -2791,12 +2538,16 @@ function init() {
           return;
         }
         [ segment.primaryStreetId, ... segment.alternateStreetIds ].map(streetId => wmeSDK.DataModel.Streets.getById({ streetId: streetId })?.name).forEach(streetName => {
-          if (streetName == null || !streetNumbers.has(streetName.toLowerCase())) {
+          if (streetName == null) {
             return;
           }
-          streetNumbers.get(streetName.toLowerCase())?.delete(houseNumber);
-          if (streetNumbers.get(streetName.toLowerCase())?.delete(houseNumber).size == 0) {
-            streetNumbers.delete(streetName.toLowerCase());
+          const normalizedStreet = normalizeNepalStreetName(streetName).toLowerCase();
+          if (!streetNumbers.has(normalizedStreet)) {
+            return;
+          }
+          streetNumbers.get(normalizedStreet)?.delete(houseNumber);
+          if (streetNumbers.get(normalizedStreet)?.size === 0) {
+            streetNumbers.delete(normalizedStreet);
           }
         });
       });
@@ -2833,7 +2584,7 @@ function init() {
       [primaryStreetId, ...altStreetIds].filter(id => id).forEach(streetId => {
         const street = W.model.streets.getObjectById(streetId);
         if (!street) return;
-        const streetName = street.getAttribute('name')?.toLowerCase();
+        const streetName = normalizeNepalStreetName(street.getAttribute('name')).toLowerCase();
         if (!streetName) return;
         if (!streetNumbers.has(streetName)) streetNumbers.set(streetName, new Set());
         streetNumbers.get(streetName).add(simplifyNumber(number));
@@ -3006,7 +2757,11 @@ function updateLayer() {
 function findNearestSegment(feature, matchName) {
   let streetIds = [];
   if (feature.properties.street) {
-    streetIds = wmeSDK.DataModel.Streets.getAll().filter(street => street.name.toLowerCase() == feature.properties.street.toLowerCase()).map(street => street.id);
+    const normalizedFeatureStreet = normalizeNepalStreetName(feature.properties.street).toLowerCase();
+    streetIds = wmeSDK.DataModel.Streets.getAll().filter(street => {
+      const normalizedSegmentStreet = normalizeNepalStreetName(street.name).toLowerCase();
+      return normalizedSegmentStreet === normalizedFeatureStreet;
+    }).map(street => street.id);
   }
   if (!matchName || streetIds.length > 0) {
     let nearestSegment = wmeSDK.DataModel.Segments.getAll()
@@ -3035,8 +2790,8 @@ function isHouseNumberAlreadyAdded(feature) {
   // If feature has a street name (attribute was selected during import),
   // only check if this specific street+number combo exists
   if (feature.properties.street && feature.properties.street.trim() !== '') {
-    const streetLower = feature.properties.street.toLowerCase();
-    return streetNumbers.has(streetLower) && streetNumbers.get(streetLower).has(simplifiedNumber);
+    const normalizedStreet = normalizeNepalStreetName(feature.properties.street).toLowerCase();
+    return streetNumbers.has(normalizedStreet) && streetNumbers.get(normalizedStreet).has(simplifiedNumber);
   }
   
   // If no street name (attribute not selected during import),
@@ -3104,6 +2859,36 @@ function cleanupName(name) {
   return sanitizeChars.reduce((acc, [char, stdChar]) => {
     return acc.replaceAll(char, stdChar);
   }, name.normalize());
+}
+
+// Normalize Nepal street names: Marg -> Marga, Street -> St, normalize whitespace
+/*********************************************************************
+ * normalizeNepalStreetName
+ * 
+ * Normalizes Nepal street names and common street suffixes for matching.
+ * Performs the following transformations:
+ * - Sanitizes special characters using cleanupName()
+ * - Normalizes multiple whitespaces to single space
+ * - Trims leading/trailing whitespace
+ * - Replaces "Marg" with "Marga" (word boundary match)
+ * - Normalizes street suffixes: Road->Rd, Street->St, Avenue->Ave, Boulevard->Blvd
+ * 
+ * @param {string} name - The street name to normalize
+ * @returns {string} The normalized street name
+ * 
+ * @example
+ * normalizeNepalStreetName("Prithvi Narayan  Marg") // Returns "Prithvi Narayan Marga"
+ * normalizeNepalStreetName("Main Street") // Returns "Main St"
+ * normalizeNepalStreetName("Main Road") // Returns "Main Rd"
+ *************************************************************************/
+function normalizeNepalStreetName(name) {
+  return cleanupName(name)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\bMarg\b/g, 'Marga')
+    .replace(/\bRoad\b/gi, 'Rd') // Road -> Rd
+    .replace(/\bSaraswoti\b/gi, 'Saraswati')
+    .replace(/\bStreet\b/gi, 'St');    // Street -> St
 }
 
 function httpRequest(params, process) {
